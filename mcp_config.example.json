@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "airp": {
+      "command": "airp-mcp",
+      "args": ["mcp", "--data-dir", "./data"],
+      "description": "AIRP Roleplay Data Manager",
+      "env": {
+        "RUST_LOG": "info"
+      }
+    }
+  }
+}

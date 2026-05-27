@@ -1,0 +1,60 @@
+[package]
+name = "airp-mcp-server"
+version = "0.1.0"
+edition = "2021"
+description = "AIRP MCP Server - Roleplay data management for MCP-aware clients"
+authors = ["AIRP Team"]
+license = "MIT"
+
+[[bin]]
+name = "airp-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# MCP Protocol
+rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
+
+# Async runtime
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "io-util", "signal", "process"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Web framework (for HTTP transport)
+axum = { version = "0.7", features = ["ws"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# UUID generation
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# PNG parsing for character cards
+png = "0.17"
+
+# Regex for lorebook matching
+regex = "1.10"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Base64 encoding/decoding
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3.9"
+wiremock = "0.6"
+flate2 = "1.0"

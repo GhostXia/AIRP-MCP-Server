@@ -1,0 +1,19 @@
+# Rust build artifacts
+target/
+
+# Runtime user data (generated at runtime)
+data/
+
+# Environment config (contains API keys if present)
+.env
+config.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

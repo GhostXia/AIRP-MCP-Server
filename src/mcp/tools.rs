@@ -1,0 +1,1286 @@
+//! MCP Tool handlers
+
+use serde_json::Value;
+use crate::error::{AirpError, Result};
+use crate::models::*;
+use crate::models::gating::GatingConfig;
+use crate::storage::*;
+use super::AirpMcpServer;
+
+impl AirpMcpServer {
+    // Character tools
+    
+    pub async fn handle_import_card(&self, args: Value) -> Result<String> {
+        let png_base64 = args["png_base64"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing png_base64".to_string()))?;
+        
+        let png_data = base64_decode(png_base64)?;
+        
+        let store = CharacterStore::new(&self.storage);
+        let character = store.import_from_png(&png_data).await?;
+        
+        Ok(format!(
+            "Successfully imported character: {} (ID: {})",
+            character.card.name,
+            character.id.as_ref()
+        ))
+    }
+    
+    pub async fn handle_list_characters(&self) -> Result<String> {
+        let store = CharacterStore::new(&self.storage);
+        let characters = store.list().await?;
+        
+        if characters.is_empty() {
+            return Ok("No characters imported yet.".to_string());
+        }
+        
+        let mut lines = vec!["Characters:".to_string()];
+        for char in characters {
+            lines.push(format!(
+                "- {} (ID: {})",
+                char.card.name,
+                char.id.as_ref()
+            ));
+        }
+        
+        Ok(lines.join("\n"))
+    }
+    
+    pub async fn handle_get_character(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        
+        let id = CharacterId::new(character_id)?;
+        let store = CharacterStore::new(&self.storage);
+        let character = store.get(&id).await?;
+        
+        let json = serde_json::to_string_pretty(&character)?;
+        Ok(json)
+    }
+    
+    pub async fn handle_delete_character(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        
+        let id = CharacterId::new(character_id)?;
+        let store = CharacterStore::new(&self.storage);
+        store.delete(&id).await?;
+        
+        Ok(format!("Character {} deleted successfully.", character_id))
+    }
+    
+    // Session tools
+    
+    pub async fn handle_start_session(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+
+        let session_id = args["session_id"].as_str()
+            .map(|s| SessionId::new(s))
+            .transpose()?;
+
+        let preset_id_str = args["preset_id"].as_str();
+
+        let char_id = CharacterId::new(character_id)?;
+        let char_store = CharacterStore::new(&self.storage);
+        let character = char_store.get(&char_id).await?;
+
+        let store = SessionStore::new(&self.storage);
+        let session = store.create(&char_id, session_id).await?;
+
+        let mut info_lines = vec![format!(
+            "Session created: {} for character: {} ({})",
+            session.id.as_ref(),
+            character.card.name,
+            character_id
+        )];
+
+        // Integrate preset
+        if let Some(pid) = preset_id_str {
+            let preset_id = PresetId::new(pid)?;
+            let preset_store = PresetStore::new(&self.storage);
+            match preset_store.get(&preset_id).await {
+                Ok(preset) => {
+                    let session_dir = self.storage.character_dir(&char_id)
+                        .join("sessions")
+                        .join(&session.id.0);
+                    let meta_path = session_dir.join("meta.json");
+                    let meta_json = tokio::fs::read_to_string(&meta_path).await?;
+                    let mut meta: SessionMeta = serde_json::from_str(&meta_json)?;
+                    meta.preset_id = Some(preset_id.as_ref().to_string());
+                    let updated_meta = serde_json::to_string_pretty(&meta)?;
+                    tokio::fs::write(&meta_path, updated_meta).await?;
+                    info_lines.push(format!("Preset applied: {} ({})", preset.name, pid));
+
+                    // Load and report SillyTavern regex scripts
+                    let regex_dir = self.storage.preset_regex_dir(pid);
+                    let scripts = crate::mcp::preset_regex::load_preset_regex_scripts(&regex_dir);
+                    if !scripts.is_empty() {
+                        let active = scripts.iter().filter(|s| !s.disabled).count();
+                        info_lines.push(format!("Regex scripts: {} total, {} active", scripts.len(), active));
+                    }
+                }
+                Err(_) => info_lines.push(format!("Warning: preset '{}' not found", pid)),
+            }
+        }
+
+        // Load lorebook summary
+        let lorebook = char_store.get_lorebook(&char_id).await?;
+        let entry_count = lorebook.entries.iter().filter(|e| e.enabled).count();
+        info_lines.push(format!("Lorebook loaded: {} active entries", entry_count));
+
+        // Load live state
+        let state = char_store.get_live_state(&char_id).await?;
+        if !state.values.is_empty() {
+            let state_summary = state.values.iter()
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            info_lines.push(format!("Live state fields: [{}]", state_summary));
+        } else {
+            info_lines.push("Live state: empty (tracking not yet started)".to_string());
+        }
+
+        Ok(info_lines.join("\n"))
+    }
+    
+    pub async fn handle_list_sessions(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        
+        let id = CharacterId::new(character_id)?;
+        let store = SessionStore::new(&self.storage);
+        let sessions = store.list(&id).await?;
+        
+        if sessions.is_empty() {
+            return Ok(format!("No sessions for character: {}", character_id));
+        }
+        
+        let json = serde_json::to_string_pretty(&sessions)?;
+        Ok(json)
+    }
+    
+    pub async fn handle_append_message(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let session_id = args["session_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing session_id".to_string()))?;
+        let role = args["role"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing role".to_string()))?;
+        let content = args["content"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing content".to_string()))?;
+        
+        let char_id = CharacterId::new(character_id)?;
+        let sess_id = SessionId::new(session_id)?;
+        
+        let message_role = match role {
+            "user" => MessageRole::User,
+            "assistant" => MessageRole::Assistant,
+            "system" => MessageRole::System,
+            _ => return Err(crate::error::AirpError::Validation(
+                format!("Invalid role: {}", role)
+            )),
+        };
+        
+        let message = Message::new(message_role, content);
+        
+        let store = SessionStore::new(&self.storage);
+        store.append_message(&char_id, &sess_id, &message).await?;
+        
+        Ok("Message appended successfully.".to_string())
+    }
+    
+    pub async fn handle_get_recent_context(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let session_id = args["session_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing session_id".to_string()))?;
+        let n = args["n"].as_u64().unwrap_or(10) as usize;
+        
+        let char_id = CharacterId::new(character_id)?;
+        let sess_id = SessionId::new(session_id)?;
+        
+        let store = SessionStore::new(&self.storage);
+        let messages = store.get_recent_context(&char_id, &sess_id, n).await?;
+        
+        let json = serde_json::to_string_pretty(&messages)?;
+        Ok(json)
+    }
+    
+    // Lorebook tools
+    
+    pub async fn handle_apply_lorebook(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let text = args["text"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing text".to_string()))?;
+        
+        let id = CharacterId::new(character_id)?;
+        let store = CharacterStore::new(&self.storage);
+        let lorebook = store.get_lorebook(&id).await?;
+        
+        let context = lorebook.build_context(text);
+        
+        if context.is_empty() {
+            Ok("No lorebook entries matched.".to_string())
+        } else {
+            Ok(context)
+        }
+    }
+    
+    pub async fn handle_update_lorebook(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let entries = args["entries"].as_array()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing entries".to_string()))?;
+        
+        let id = CharacterId::new(character_id)?;
+        
+        let lorebook_entries: Vec<LorebookEntry> = entries.iter()
+            .map(|e| serde_json::from_value(e.clone()).map_err(AirpError::Json))
+            .collect::<Result<Vec<_>>>()?;
+        
+        let lorebook = Lorebook {
+            entries: lorebook_entries,
+        };
+        
+        let store = CharacterStore::new(&self.storage);
+        store.save_lorebook(&id, &lorebook).await?;
+        
+        Ok(format!("Lorebook updated for character: {}", character_id))
+    }
+    
+    // State tools
+    
+    pub async fn handle_update_state(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let state_delta = args["state_delta"].clone();
+        
+        let id = CharacterId::new(character_id)?;
+        let store = CharacterStore::new(&self.storage);
+        
+        let mut state = store.get_live_state(&id).await?;
+        state.update(state_delta);
+        store.save_live_state(&id, &state).await?;
+        
+        // Notify subscribers
+        // In real implementation, send notification to subscribed clients
+        
+        Ok(format!("State updated for character: {}", character_id))
+    }
+    
+    pub async fn handle_get_live_state(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        
+        let id = CharacterId::new(character_id)?;
+        let store = CharacterStore::new(&self.storage);
+        let state = store.get_live_state(&id).await?;
+        
+        let json = serde_json::to_string_pretty(&state)?;
+        Ok(json)
+    }
+    
+    // Volume tools
+    
+    pub async fn handle_seal_volume(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let session_id = args["session_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing session_id".to_string()))?;
+        let clear_session = args["clear_session"].as_bool().unwrap_or(false);
+        
+        let char_id = CharacterId::new(character_id)?;
+        let sess_id = SessionId::new(session_id)?;
+        
+        // 1. Get all messages from the session
+        let session_store = SessionStore::new(&self.storage);
+        let session = session_store.get(&char_id, &sess_id).await?;
+        
+        if session.messages.is_empty() {
+            return Ok(format!("Session {} has no messages to seal.", session_id));
+        }
+        
+        // 2. Create volume directory
+        let char_dir = self.storage.character_dir(&char_id);
+        let volumes_dir = char_dir.join("memory").join("volumes");
+        tokio::fs::create_dir_all(&volumes_dir).await?;
+        
+        // 3. Generate volume filename with timestamp
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let volume_filename = format!("vol_{}.md", timestamp);
+        let volume_path = volumes_dir.join(&volume_filename);
+        
+        // 4. Get current volume number
+        let current_volume = session.meta.current_volume;
+        let new_volume = current_volume + 1;
+        
+        // 5. Format messages into markdown
+        let mut volume_content = format!(r#"# Volume {}
+
+## Metadata
+- **Session**: {}
+- **Character**: {}
+- **Sealed At**: {}
+- **Message Count**: {}
+- **Volume Number**: {}
+
+---
+
+"#, 
+            new_volume,
+            session_id,
+            character_id,
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            session.messages.len(),
+            new_volume
+        );
+        
+        // Add each message
+        for (idx, msg) in session.messages.iter().enumerate() {
+            let role_str = match msg.role {
+                crate::models::MessageRole::System => "System",
+                crate::models::MessageRole::User => "User",
+                crate::models::MessageRole::Assistant => "Assistant",
+            };
+            
+            volume_content.push_str(&format!(r#"### Message {}
+
+**Role**: {}
+**Time**: {}
+
+{}
+
+---
+
+"#,
+                idx + 1,
+                role_str,
+                msg.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                msg.content
+            ));
+        }
+        
+        // 6. Write volume file
+        tokio::fs::write(&volume_path, volume_content).await?;
+        
+        // 7. Update memory index
+        let memory_dir = char_dir.join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await?;
+        let index_path = memory_dir.join("index.md");
+        
+        let index_entry = format!("- [Volume {}](./volumes/{}) - {} messages - {}\n",
+            new_volume,
+            volume_filename,
+            session.messages.len(),
+            chrono::Utc::now().format("%Y-%m-%d")
+        );
+        
+        // Append to index
+        use tokio::io::AsyncWriteExt;
+        let mut index_file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&index_path)
+            .await?;
+        index_file.write_all(index_entry.as_bytes()).await?;
+        index_file.flush().await?;
+        
+        // 8. Update session metadata with new volume number
+        let session_dir = char_dir.join("sessions").join(&sess_id.0);
+        let meta_path = session_dir.join("meta.json");
+        let meta_json = tokio::fs::read_to_string(&meta_path).await?;
+        let mut meta: crate::models::SessionMeta = serde_json::from_str(&meta_json)?;
+        meta.current_volume = new_volume;
+        meta.updated_at = chrono::Utc::now();
+        
+        let updated_meta = serde_json::to_string_pretty(&meta)?;
+        tokio::fs::write(&meta_path, updated_meta).await?;
+        
+        // 9. Clear session if requested
+        let clear_info = if clear_session {
+            // Clear chat.jsonl
+            let chat_path = session_dir.join("chat.jsonl");
+            tokio::fs::write(&chat_path, "").await?;
+            
+            // Update message count
+            meta.message_count = 0;
+            let updated_meta = serde_json::to_string_pretty(&meta)?;
+            tokio::fs::write(&meta_path, updated_meta).await?;
+            
+            " Session cleared."
+        } else {
+            ""
+        };
+        
+        Ok(format!(
+            "Volume {} sealed successfully.\nFile: {}\nMessages archived: {}{}",
+            new_volume,
+            volume_path.display(),
+            session.messages.len(),
+            clear_info
+        ))
+    }
+    
+    // Preset tools
+    
+    pub async fn handle_list_presets(&self) -> Result<String> {
+        let store = PresetStore::new(&self.storage);
+        let presets = store.list().await?;
+        
+        if presets.is_empty() {
+            return Ok("No presets configured.".to_string());
+        }
+        
+        let mut lines = vec!["Presets:".to_string()];
+        for preset in presets {
+            lines.push(format!(
+                "- {} (ID: {})",
+                preset.name,
+                preset.id.as_ref()
+            ));
+        }
+        
+        Ok(lines.join("\n"))
+    }
+    
+    pub async fn handle_get_preset(&self, args: Value) -> Result<String> {
+        let preset_id = args["preset_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing preset_id".to_string()))?;
+        
+        let id = PresetId::new(preset_id)?;
+        let store = PresetStore::new(&self.storage);
+        let preset = store.get(&id).await?;
+        
+        let json = serde_json::to_string_pretty(&preset)?;
+        Ok(json)
+    }
+    
+    // Decompose tools
+    
+    pub async fn handle_decompose_character(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let target_dir = args["target_dir"].as_str().unwrap_or("./decomposed");
+        let enhance = args["enhance"].as_bool().unwrap_or(true);
+        
+        let id = CharacterId::new(character_id)?;
+        
+        // Get character
+        let char_store = CharacterStore::new(&self.storage);
+        let character = char_store.get(&id).await?;
+        
+        // Get lorebook
+        let lorebook = char_store.get_lorebook(&id).await?;
+        
+        // Decompose
+        let config = crate::mcp::DecomposeConfig {
+            target_dir: target_dir.to_string(),
+            enhance_analysis: enhance,
+            decompose_lorebook: !lorebook.entries.is_empty(),
+        };
+        
+        let decomposer = crate::mcp::CharacterDecomposer::new();
+        let result = decomposer.decompose(&character, &config).await?;
+        
+        // Decompose lorebook if exists
+        if config.decompose_lorebook {
+            decomposer.decompose_lorebook(&id, &lorebook, &config).await?;
+        }
+        
+        Ok(format!(
+            "Character '{}' decomposed successfully.\nTarget directory: {}\nFiles created: {}\nEnhancement needed: {}",
+            character.card.name,
+            result.target_dir,
+            result.files_written.len(),
+            if result.needs_enhancement { "Yes" } else { "No" }
+        ))
+    }
+    
+    pub async fn handle_decompose_preset(&self, args: Value) -> Result<String> {
+        let preset_id = args["preset_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing preset_id".to_string()))?;
+        let target_dir = args["target_dir"].as_str().unwrap_or("./decomposed");
+        
+        let id = PresetId::new(preset_id)?;
+        
+        // Get preset
+        let store = PresetStore::new(&self.storage);
+        let preset = store.get(&id).await?;
+        
+        // Decompose
+        let config = crate::mcp::DecomposeConfig {
+            target_dir: target_dir.to_string(),
+            enhance_analysis: false,
+            decompose_lorebook: false,
+        };
+        
+        let decomposer = crate::mcp::PresetDecomposer::new();
+        let result = decomposer.decompose(&preset, &config).await?;
+        
+        Ok(format!(
+            "Preset '{}' decomposed successfully.\nTarget directory: {}\nFiles created: {}",
+            preset.name,
+            result.target_dir,
+            result.files_written.len()
+        ))
+    }
+    
+    // Gating tools
+
+    pub async fn handle_gating_status(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+
+        let id = CharacterId::new(character_id)?;
+        let char_dir = self.storage.character_dir(&id);
+        let gating_path = char_dir.join("gating").join("checkpoints.json");
+
+        if !gating_path.exists() {
+            return Ok(format!(
+                "No gating configured for character '{}'. Create gating/checkpoints.json to enable.",
+                character_id
+            ));
+        }
+
+        let gating: GatingConfig = serde_json::from_str(
+            &tokio::fs::read_to_string(&gating_path).await?
+        )?;
+
+        let mut status = vec![
+            format!("Gating Status for {}", character_id),
+            format!("Turn count: {}", gating.turn_count),
+            format!("Checkpoints: {}/{}",
+                gating.checkpoints.iter().filter(|c| c.reached).count(),
+                gating.checkpoints.len()
+            ),
+            String::new(),
+            "Checkpoints:".to_string(),
+        ];
+
+        for cp in &gating.checkpoints {
+            let marker = if cp.reached { "✓" } else { "○" };
+            status.push(format!(
+                "  {} {} (turn {}) {}",
+                marker,
+                cp.label,
+                cp.turns_required,
+                if !cp.reached {
+                    format!("- {} turns remaining", cp.turns_required.saturating_sub(gating.turn_count))
+                } else {
+                    String::new()
+                }
+            ));
+        }
+
+        Ok(status.join("\n"))
+    }
+
+    // Message management
+
+    pub async fn handle_analyze_card(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let tier = args["tier"].as_u64().unwrap_or(0) as u8;
+
+        let char_id = CharacterId::new(character_id)?;
+        let char_store = CharacterStore::new(&self.storage);
+        let character = char_store.get(&char_id).await?;
+        let lorebook = char_store.get_lorebook(&char_id).await?;
+
+        let char_dir = self.storage.character_dir(&char_id);
+        let analysis_dir = char_dir.join("analysis");
+        tokio::fs::create_dir_all(&analysis_dir).await?;
+
+        let mut files_created = vec![];
+
+        // Tier 0: Basic summary (always)
+        let summary_md = format!(r#"# Character Analysis: {}
+
+## Tier Classification
+**Tier**: {} - {}
+**Reasoning**: {}
+
+## Basic Info
+- **Name**: {}
+- **Creator**: {}
+- **Version**: {}
+- **Tags**: {}
+
+## Card Fields Summary
+| Field | Length |
+|-------|--------|
+| Description | {} chars |
+| Personality | {} chars |
+| Scenario | {} chars |
+| Mes Example | {} chars |
+| First Message | {} chars |
+
+## Lorebook Stats
+- Total entries: {}
+- Active entries: {}
+- Key categories: {}
+"#,
+            character.card.name,
+            if character.data.has_state_tracking { 2 } else { if !lorebook.entries.is_empty() { 1 } else { 0 } },
+            match (character.data.has_state_tracking, !lorebook.entries.is_empty()) {
+                (true, true) => "Key-Value State Card + Lorebook",
+                (true, false) => "Key-Value State Card",
+                (false, true) => "Pure Setting/Geographic Card",
+                (false, false) => "Basic RP Card",
+            },
+            class_reason(character.data.has_state_tracking, !lorebook.entries.is_empty()),
+            character.card.name,
+            character.card.creator.as_deref().unwrap_or("Unknown"),
+            character.card.character_version.as_deref().unwrap_or("1.0"),
+            character.card.tags.join(", "),
+            character.card.description.len(),
+            character.card.personality.len(),
+            character.card.scenario.len(),
+            character.card.mes_example.len(),
+            character.card.first_mes.len(),
+            lorebook.entries.len(),
+            lorebook.entries.iter().filter(|e| e.enabled).count(),
+            class_categories(&lorebook),
+        );
+
+        let summary_path = analysis_dir.join("summary.md");
+        tokio::fs::write(&summary_path, summary_md).await?;
+        files_created.push("analysis/summary.md".to_string());
+
+        // Tier 1+: Greetings analysis
+        if tier >= 1 {
+            let greetings_md = format!(r#"# Greetings Analysis
+
+## Default Greeting
+{}
+
+## Analysis
+- **Tone**: {}
+- **Style**: {}
+- **Scenario hint**: {}
+"#,
+                character.card.first_mes,
+                detect_tone(&character.card.first_mes),
+                detect_style(&character.card.first_mes),
+                if character.card.scenario.is_empty() { "None" } else { &character.card.scenario },
+            );
+
+            let greeting_path = analysis_dir.join("greetings.md");
+            tokio::fs::write(&greeting_path, greetings_md).await?;
+            files_created.push("analysis/greetings.md".to_string());
+        }
+
+        // Tier 2+: Lorebook analysis
+        if tier >= 2 && !lorebook.entries.is_empty() {
+            let mut lorebook_md = format!(r#"# Lorebook Analysis
+
+## Entry Count: {}
+## Active: {}
+
+| # | Name | Keys | Content Length |
+|---|------|------|----------------|
+"#,
+                lorebook.entries.len(),
+                lorebook.entries.iter().filter(|e| e.enabled).count(),
+            );
+
+            for (idx, entry) in lorebook.entries.iter().enumerate() {
+                lorebook_md.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    idx + 1,
+                    entry.name.as_deref().unwrap_or(&entry.id),
+                    entry.keys.join(", "),
+                    entry.content.len(),
+                ));
+            }
+
+            let lorebook_path = analysis_dir.join("lorebook.md");
+            tokio::fs::write(&lorebook_path, lorebook_md).await?;
+            files_created.push("analysis/lorebook.md".to_string());
+        }
+
+        // Tier 3: Advanced - state schema and personality deep dive
+        if tier >= 3 || character.data.has_state_tracking {
+            let state_schema = analysis_dir.join("state_schema.md");
+            let has_schema = state_schema.exists();
+            if has_schema {
+                files_created.push("analysis/state_schema.md (existing)".to_string());
+            } else {
+                let schema_md = "# State Schema\n\n| Field | Type | Min | Max | Description |\n|-------|------|-----|-----|-------------|\n<!-- Auto-detected fields will be added here -->\n".to_string();
+                tokio::fs::write(&state_schema, schema_md).await?;
+                files_created.push("analysis/state_schema.md".to_string());
+            }
+
+            let personality_path = analysis_dir.join("personality_deep.md");
+            let personality_md = format!(r#"# Personality Deep Dive
+
+## Raw Personality Text
+{}
+
+## Keyword Extraction
+```
+<!-- Agent: Please extract 5-10 personality keywords from the above text -->
+```
+
+## Behavior Prediction
+```
+<!-- Agent: Based on personality, predict typical behavior patterns -->
+```
+
+## Voice & Tone Analysis
+{}
+"#,
+                character.card.personality,
+                detect_voice(&character.card.mes_example),
+            );
+            tokio::fs::write(&personality_path, personality_md).await?;
+            files_created.push("analysis/personality_deep.md".to_string());
+        }
+
+        // Save tier to character data
+        let data_path = char_dir.join("data.json");
+        if data_path.exists() {
+            let json = tokio::fs::read_to_string(&data_path).await?;
+            let mut data: CharacterData = serde_json::from_str(&json)?;
+
+            let tier_enum = match tier.min(3) {
+                0 => AnalysisTier::Tier0Basic,
+                1 => AnalysisTier::Tier1Greeting,
+                2 => AnalysisTier::Tier2Lorebook,
+                _ => AnalysisTier::Tier3Advanced,
+            };
+
+            data.analysis_tier = Some(tier_enum);
+            data.has_state_tracking = character.data.has_state_tracking || tier >= 3;
+            data.updated_at = chrono::Utc::now();
+
+            let updated = serde_json::to_string_pretty(&data)?;
+            tokio::fs::write(&data_path, updated).await?;
+        }
+
+        Ok(format!(
+            "Analysis complete for '{}'. Tier: {}\nFiles created in analysis/:\n{}",
+            character.card.name,
+            tier,
+            files_created.iter().map(|f| format!("  - {}", f)).collect::<Vec<_>>().join("\n"),
+        ))
+    }
+    
+    pub async fn handle_rollback_messages(&self, args: Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let session_id = args["session_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing session_id".to_string()))?;
+        let n = args["n"].as_u64().unwrap_or(1) as usize;
+        
+        let char_id = CharacterId::new(character_id)?;
+        let sess_id = SessionId::new(session_id)?;
+        
+        // Get session
+        let store = SessionStore::new(&self.storage);
+        let session = store.get(&char_id, &sess_id).await?;
+        
+        if session.messages.len() < n {
+            return Err(crate::error::AirpError::Validation(
+                format!("Cannot rollback {} messages, session only has {}", n, session.messages.len())
+            ));
+        }
+        
+        // Calculate new message count
+        let new_count = session.messages.len() - n;
+        
+        // Rewrite chat.jsonl with truncated messages
+        let session_dir = self.storage.character_dir(&char_id)
+            .join("sessions")
+            .join(&sess_id.0);
+        let chat_path = session_dir.join("chat.jsonl");
+        
+        // Keep only first new_count messages
+        let messages_to_keep: Vec<Message> = session.messages.into_iter()
+            .take(new_count)
+            .collect();
+        
+        // Rewrite file
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(&chat_path).await?;
+        for msg in &messages_to_keep {
+            let line = serde_json::to_string(msg)?;
+            file.write_all(line.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+        }
+        file.flush().await?;
+        
+        // Update metadata
+        let meta_path = session_dir.join("meta.json");
+        let meta_json = tokio::fs::read_to_string(&meta_path).await?;
+        let mut meta: crate::models::SessionMeta = serde_json::from_str(&meta_json)?;
+        meta.message_count = new_count;
+        meta.updated_at = chrono::Utc::now();
+        
+        let updated_meta = serde_json::to_string_pretty(&meta)?;
+        tokio::fs::write(&meta_path, updated_meta).await?;
+        
+        Ok(format!(
+            "Rolled back {} message(s) from session {}.\nNew message count: {}",
+            n, session_id, new_count
+        ))
+    }
+
+    // ── M_MS Scene tools ─────────────────────────────────────────────────
+
+    pub async fn handle_create_scene(&self, args: serde_json::Value) -> Result<String> {
+        let scene_id = args["scene_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing scene_id".to_string()))?;
+        let description = args["description"].as_str().unwrap_or("");
+        let narrator_style = args["narrator_style"].as_str().unwrap_or("third_person_limited");
+        let format_hint = args["format_hint"].as_str().unwrap_or("");
+        let lorebook_merge = args["lorebook_merge"].as_str().unwrap_or("union");
+
+        let characters: Vec<CharacterEntry> = if let Some(arr) = args["characters"].as_array() {
+            arr.iter().map(|v| CharacterEntry {
+                character_id: v["character_id"].as_str().unwrap_or("").to_string(),
+                role: match v["role"].as_str().unwrap_or("npc") {
+                    "primary" => CharacterRole::Primary,
+                    _ => CharacterRole::Npc,
+                },
+                intro: v["intro"].as_str().unwrap_or("").to_string(),
+            }).collect()
+        } else {
+            return Err(AirpError::Validation("characters must be an array".to_string()));
+        };
+
+        let merge = match lorebook_merge {
+            "primary_only" => LorebookMerge::PrimaryOnly,
+            _ => LorebookMerge::Union,
+        };
+
+        let config = SceneConfig {
+            scene_id: scene_id.to_string(),
+            description: description.to_string(),
+            characters,
+            narrator_style: narrator_style.to_string(),
+            lorebook_merge: merge,
+            format_hint: format_hint.to_string(),
+        };
+
+        self.storage.save_scene(&config).await?;
+
+        Ok(serde_json::to_string_pretty(&config)?)
+    }
+
+    pub async fn handle_list_scenes(&self) -> Result<String> {
+        let scenes = self.storage.list_scenes().await?;
+        serde_json::to_string_pretty(&scenes).map_err(Into::into)
+    }
+
+    pub async fn handle_get_scene(&self, args: serde_json::Value) -> Result<String> {
+        let scene_id = args["scene_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing scene_id".to_string()))?;
+
+        let config = self.storage.load_scene(scene_id).await?;
+        serde_json::to_string_pretty(&config).map_err(Into::into)
+    }
+
+    pub async fn handle_add_character_to_scene(&self, args: serde_json::Value) -> Result<String> {
+        let scene_id = args["scene_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing scene_id".to_string()))?;
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing character_id".to_string()))?;
+        let role = args["role"].as_str().unwrap_or("npc");
+        let intro = args["intro"].as_str().unwrap_or("");
+
+        let mut config = self.storage.load_scene(scene_id).await?;
+
+        let entry = CharacterEntry {
+            character_id: character_id.to_string(),
+            role: match role { "primary" => CharacterRole::Primary, _ => CharacterRole::Npc },
+            intro: intro.to_string(),
+        };
+        config.characters.push(entry);
+        self.storage.save_scene(&config).await?;
+
+        Ok(serde_json::to_string_pretty(&config)?)
+    }
+
+    // ── M_MS Lorebook merge — pure algorithm, no AI ─────────────────────
+
+    pub async fn handle_merge_lorebooks(&self, args: serde_json::Value) -> Result<String> {
+        let character_ids: Vec<&str> = args["character_ids"].as_array()
+            .ok_or_else(|| AirpError::Validation("character_ids must be an array".to_string()))?
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        let strategy = args["strategy"].as_str().unwrap_or("union");
+
+        let char_store = CharacterStore::new(&self.storage);
+        let mut all_entries: Vec<LorebookEntry> = Vec::new();
+
+        for cid in &character_ids {
+            let id = CharacterId::new(*cid)?;
+            if let Ok(lb) = char_store.get_lorebook(&id).await {
+                all_entries.extend(lb.entries);
+            }
+        }
+
+        if strategy == "primary_only" {
+            if let Some(&first) = character_ids.first() {
+                let id = CharacterId::new(first)?;
+                let lb = char_store.get_lorebook(&id).await?;
+                return Ok(serde_json::to_string_pretty(&lb)?);
+            }
+        }
+
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut merged: Vec<&LorebookEntry> = Vec::new();
+        for e in &all_entries {
+            if e.enabled && seen.insert(&e.content) {
+                merged.push(e);
+            }
+        }
+        merged.sort_by_key(|e| std::cmp::Reverse(e.insertion_order));
+
+        let mut out = String::new();
+        out.push_str(&format!("Merged {} lorebook entries from {} characters (strategy: {})\n\n",
+            merged.len(), character_ids.len(), strategy));
+
+        for e in &merged {
+            let name = e.name.as_deref().unwrap_or("unnamed");
+            let keys = e.keys.join(", ");
+            out.push_str(&format!("## {}\n[keys: {}]\n{}\n\n---\n\n", name, keys, e.content));
+        }
+
+        Ok(out)
+    }
+
+    pub async fn handle_build_scene_system_prompt(&self, args: serde_json::Value) -> Result<String> {
+        let scene_id = args["scene_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing scene_id".to_string()))?;
+        let user_name = args["user_name"].as_str().unwrap_or("User");
+        let preset_id = args["preset_id"].as_str();
+
+        let config = self.storage.load_scene(scene_id).await?;
+        let char_store = CharacterStore::new(&self.storage);
+
+        let mut prompt = String::new();
+
+        if !config.description.is_empty() {
+            prompt.push_str("[场景设定]\n");
+            prompt.push_str(&config.description);
+            prompt.push_str("\n\n");
+        }
+
+        prompt.push_str("[在场角色]\n");
+
+        let mut char_ids: Vec<String> = Vec::new();
+        for entry in &config.characters {
+            char_ids.push(entry.character_id.clone());
+
+            let role_label = match entry.role {
+                CharacterRole::Primary => "（主视角）",
+                CharacterRole::Npc => "（NPC）",
+            };
+
+            let id = CharacterId::new(&entry.character_id)?;
+            let char_info = match char_store.get(&id).await {
+                Ok(c) => {
+                    let mut info = String::new();
+                    if !c.card.personality.is_empty() {
+                        info.push_str(&format!("[性格]: {}\n", c.card.personality));
+                    }
+                    if !c.card.description.is_empty() {
+                        info.push_str(&format!("[描述]: {}\n", c.card.description));
+                    }
+                    if !c.card.scenario.is_empty() {
+                        info.push_str(&format!("[场景背景]: {}\n", c.card.scenario));
+                    }
+                    info
+                }
+                Err(_) => "(角色卡未导入)".to_string(),
+            };
+
+            prompt.push_str(&format!("## {}{}\n", entry.character_id, role_label));
+            if !entry.intro.is_empty() {
+                prompt.push_str(&format!("场景介绍: {}\n", entry.intro));
+            }
+            prompt.push_str(&char_info);
+            prompt.push('\n');
+        }
+
+        let mut all_entries: Vec<LorebookEntry> = Vec::new();
+        for cid in &char_ids {
+            let id = CharacterId::new(cid.as_str())?;
+            if let Ok(lb) = char_store.get_lorebook(&id).await {
+                all_entries.extend(lb.entries);
+            }
+        }
+
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut merged: Vec<&LorebookEntry> = Vec::new();
+        for e in &all_entries {
+            if e.enabled && seen.insert(&e.content) {
+                merged.push(e);
+            }
+        }
+        merged.sort_by_key(|e| std::cmp::Reverse(e.insertion_order));
+
+        if !merged.is_empty() {
+            prompt.push_str("[世界书信息]\n");
+            for e in &merged {
+                prompt.push_str(&format!("- {}: {}\n",
+                    e.name.as_deref().unwrap_or("unnamed"),
+                    e.content));
+            }
+            prompt.push('\n');
+        }
+
+        if !config.format_hint.is_empty() {
+            prompt.push_str("[格式规则]\n");
+            prompt.push_str(&config.format_hint);
+            prompt.push('\n');
+        }
+        prompt.push_str(&format!("用户扮演 {}，AI 不代写用户台词。\n", user_name));
+
+        if let Some(pid) = preset_id {
+            let preset_id_obj = PresetId::new(pid)?;
+            let preset_store = PresetStore::new(&self.storage);
+            if let Ok(preset) = preset_store.get(&preset_id_obj).await {
+                prompt.push_str("\n---\n");
+                prompt.push_str(&preset.config.system_prompt_prefix);
+                prompt.push('\n');
+            }
+        }
+
+        Ok(prompt)
+    }
+
+    // ── M_PR Preset tools ────────────────────────────────────────────────
+
+    pub async fn handle_import_preset(&self, args: serde_json::Value) -> Result<String> {
+        let preset_id = args["preset_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing preset_id".to_string()))?;
+        let preset_json = args["preset_json"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing preset_json".to_string()))?;
+
+        validate_id_segment(preset_id)?;
+
+        let _: serde_json::Value = serde_json::from_str(preset_json)
+            .map_err(|e| AirpError::Validation(format!("preset_json is not valid JSON: {}", e)))?;
+
+        let preset_path = self.storage.preset_json_path(preset_id);
+        if let Some(parent) = preset_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&preset_path, preset_json).await?;
+
+        Ok(serde_json::json!({
+            "preset_id": preset_id,
+            "path": preset_path.to_string_lossy(),
+            "bytes_written": preset_json.len(),
+        })
+        .to_string())
+    }
+
+    pub async fn handle_write_preset_artifact(&self, args: serde_json::Value) -> Result<String> {
+        let preset_id = args["preset_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing preset_id".to_string()))?;
+        let artifact_path = args["artifact_path"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing artifact_path".to_string()))?;
+        let content = args["content"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing content".to_string()))?;
+
+        validate_id_segment(preset_id)?;
+
+        let preset_dir = self.storage.presets_dir().join(preset_id);
+        tokio::fs::create_dir_all(&preset_dir).await?;
+
+        let artifact_full = self.storage.safe_resolve_for_write(&preset_dir, artifact_path)?;
+        if let Some(parent) = artifact_full.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&artifact_full, content).await?;
+
+        Ok(serde_json::json!({
+            "preset_id": preset_id,
+            "artifact_path": artifact_path,
+            "bytes_written": content.len(),
+        })
+        .to_string())
+    }
+
+    pub async fn handle_list_preset_regex_scripts(&self, args: serde_json::Value) -> Result<String> {
+        let preset_id = args["preset_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing preset_id".to_string()))?;
+
+        validate_id_segment(preset_id)?;
+
+        let regex_dir = self.storage.preset_regex_dir(preset_id);
+        if !regex_dir.exists() {
+            return Ok("[]".to_string());
+        }
+
+        let mut scripts: Vec<serde_json::Value> = Vec::new();
+        let mut read_dir = tokio::fs::read_dir(&regex_dir).await?;
+
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let filename = entry.file_name().to_string_lossy().into_owned();
+            let raw = match tokio::fs::read_to_string(&path).await {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let cleaned = crate::storage::strip_utf8_bom(&raw);
+
+            let mut v: serde_json::Value = match serde_json::from_str(cleaned) {
+                Ok(v) => v,
+                Err(_) => {
+                    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(cleaned) {
+                        for mut item in arr {
+                            if let Some(obj) = item.as_object_mut() {
+                                obj.insert("_filename".into(), serde_json::json!(filename));
+                            }
+                            scripts.push(item);
+                        }
+                    }
+                    continue;
+                }
+            };
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("_filename".into(), serde_json::json!(filename));
+            }
+            scripts.push(v);
+        }
+
+        serde_json::to_string(&scripts).map_err(|e| AirpError::Json(e))
+    }
+
+    pub async fn handle_remove_preset_regex_script(&self, args: serde_json::Value) -> Result<String> {
+        let preset_id = args["preset_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing preset_id".to_string()))?;
+        let filename = args["filename"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing filename".to_string()))?;
+
+        validate_id_segment(preset_id)?;
+
+        let preset_dir = self.storage.presets_dir().join(preset_id);
+        let target = self.storage.safe_resolve_for_write(&preset_dir, &format!("regex/{}", filename))?;
+
+        if !target.exists() {
+            return Err(AirpError::Validation(format!("Script file not found: {}", filename)));
+        }
+
+        tokio::fs::remove_file(&target).await?;
+
+        Ok(serde_json::json!({
+            "preset_id": preset_id,
+            "filename": filename,
+            "removed": true,
+        })
+        .to_string())
+    }
+
+    pub async fn handle_set_preset_regex_enabled(&self, args: serde_json::Value) -> Result<String> {
+        let preset_id = args["preset_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing preset_id".to_string()))?;
+        let filename = args["filename"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing filename".to_string()))?;
+        let enabled = args["enabled"].as_bool().unwrap_or(true);
+
+        validate_id_segment(preset_id)?;
+
+        let preset_dir = self.storage.presets_dir().join(preset_id);
+        let target = self.storage.safe_resolve_for_write(&preset_dir, &format!("regex/{}", filename))?;
+
+        if !target.exists() {
+            return Err(AirpError::Validation(format!("Script file not found: {}", filename)));
+        }
+
+        let raw = tokio::fs::read_to_string(&target).await?;
+        let cleaned = crate::storage::strip_utf8_bom(&raw).to_owned();
+        let new_disabled = !enabled;
+
+        let updated: String = if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+            if v.is_object() {
+                v["disabled"] = serde_json::json!(new_disabled);
+            } else if let Some(arr) = v.as_array_mut() {
+                for item in arr.iter_mut() {
+                    item["disabled"] = serde_json::json!(new_disabled);
+                }
+            }
+            serde_json::to_string_pretty(&v)?
+        } else {
+            return Err(AirpError::Validation(format!("Script file is not valid JSON: {}", filename)));
+        };
+
+        tokio::fs::write(&target, updated).await?;
+
+        Ok(serde_json::json!({
+            "preset_id": preset_id,
+            "filename": filename,
+            "enabled": enabled,
+            "disabled": new_disabled,
+        })
+        .to_string())
+    }
+}
+
+fn base64_decode(input: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(input)
+        .map_err(|e| crate::error::AirpError::Validation(format!("Base64 decode error: {}", e)))
+}
+
+fn class_reason(has_state: bool, has_lorebook: bool) -> &'static str {
+    match (has_state, has_lorebook) {
+        (true, true) => "Card contains state tracking fields and lorebook entries",
+        (true, false) => "Card contains state tracking fields (HP/MP/etc.)",
+        (false, true) => "Card has lorebook/world building entries",
+        (false, false) => "Basic character card without complex state or world rules",
+    }
+}
+
+fn class_categories(lorebook: &Lorebook) -> String {
+    if lorebook.entries.is_empty() {
+        return "None".to_string();
+    }
+    let categories: Vec<&str> = lorebook.entries.iter()
+        .filter(|e| e.enabled)
+        .filter_map(|e| e.name.as_deref())
+        .take(5)
+        .collect();
+    if categories.is_empty() { "Uncategorized".to_string() } else { categories.join(", ") }
+}
+
+fn detect_tone(text: &str) -> &'static str {
+    if text.is_empty() { return "Neutral"; }
+    let lower = text.to_lowercase();
+    if lower.contains("!") || lower.contains("?!") { "Energetic/Excited" }
+    else if lower.contains("...") || lower.contains("~") { "Gentle/Soft" }
+    else if lower.contains("?") { "Inquisitive" }
+    else { "Neutral/Calm" }
+}
+
+fn detect_style(text: &str) -> &'static str {
+    if text.is_empty() { return "Plain"; }
+    let lower = text.to_lowercase();
+    if lower.contains("*") || lower.contains("_") { "Descriptive/Action-heavy" }
+    else if text.len() > 200 { "Detailed/Elaborate" }
+    else { "Concise/Direct" }
+}
+
+fn detect_voice(text: &str) -> String {
+    if text.is_empty() {
+        return "```\n<!-- Agent: No example messages available for voice analysis -->\n```".to_string();
+    }
+    let sample: String = text.chars().take(300).collect();
+    format!("```\n{}\n```\n<!-- Agent: Analyze speaking patterns from the above examples -->", sample)
+}
