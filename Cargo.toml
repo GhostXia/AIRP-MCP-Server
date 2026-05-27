@@ -1,7 +1,7 @@
 [package]
 name = "airp-mcp-server"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "AIRP MCP Server - Roleplay data management for MCP-aware clients"
 authors = ["AIRP Team"]
 license = "MIT"
@@ -15,7 +15,7 @@ path = "src/main.rs"
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
 
 # Async runtime
-tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "io-util", "signal", "process"] }
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "io-util", "signal", "process"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Serialization
@@ -23,9 +23,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Web framework (for HTTP transport)
-axum = { version = "0.7", features = ["ws"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Error handling
 thiserror = "1.0"
@@ -37,7 +37,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # UUID generation
-uuid = { version = "1.6", features = ["v4", "serde"] }
+uuid = { version = "1.15", features = ["v4", "serde"] }
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
@@ -49,7 +49,7 @@ png = "0.17"
 regex = "1.10"
 
 # CLI
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
 
 # Base64 encoding/decoding
 base64 = "0.22"
