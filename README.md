@@ -5,6 +5,11 @@
 一个纯 MCP 协议角色扮演数据管理服务器。不调用 AI API，不自造 Agent runtime。
 所有推理、叙事推进、角色演绎由 MCP Client（Claude Code / Cursor / Pi / Codex）通过 AIRP 提供的 Tools / Resources / Prompts 完成。
 
+> **AIRP-MCP-Server** 是 AIRP 的轻量级 MCP 版本。如果你需要完整的流式 SSE 网关、
+> 实时角色状态面板、守护进程部署、OpenAI 兼容 API 代理等高级功能，
+> 请使用 **[AIRP-Core](https://github.com/GhostXia/AIRP-Core)** ——
+> AIRP 项目的高级和全面版本。
+
 ## 快速开始
 
 ```bash
@@ -40,13 +45,13 @@ cargo build --release
 - 并行调用策略（3x-4x 加速）
 - 多角色场景管理
 - 预设文风一键移植
-- 29 个工具 / 16 个资源 / 9 个提示词的速查表
+- 31 个工具 / 16 个资源 / 11 个提示词的速查表
 
 ---
 
 ## 功能总览
 
-### 29 个 MCP Tools
+### 31 个 MCP Tools
 
 | 工具 | 用途 |
 |:--|:--|
@@ -79,6 +84,8 @@ cargo build --release
 | `list_scenes` | 列出所有场景 |
 | `get_scene` | 查看场景配置 |
 | `add_character_to_scene` | 向场景添加角色 |
+| `merge_lorebooks` | 合并多角色世界书（去重排序，纯算法） |
+| `build_scene_system_prompt` | 自动装配多角色场景系统提示词 |
 
 ### 16 个 MCP Resource URIs
 
@@ -101,7 +108,7 @@ cargo build --release
 | `airp://scenes` | 场景列表 |
 | `airp://scenes/{id}` | 场景完整配置 |
 
-### 9 个 MCP Prompts
+### 11 个 MCP Prompts
 
 | Prompt | 用途 |
 |:--|:--|
@@ -114,6 +121,8 @@ cargo build --release
 | `prompt_decompose_character` | 角色卡拆解的 Agent 指导（6 步） |
 | `prompt_enhance_analysis` | 增强分析的 Agent 指导（5 步） |
 | `prompt_build_session_context` | 会话上下文构建的 Agent 指导 |
+| `validate_card` | 角色卡内容验证（未知宏/孤儿代码/破损 markup） |
+| `validate_preset` | 预设验证（破损正则/未知 identifier/参数异常） |
 
 ---
 
