@@ -95,6 +95,11 @@ impl ServerHandler for AirpMcpServer {
             - World books / Lorebooks (keyword-triggered knowledge)\n\
             - AI presets (system prompts, regex filters)\n\
             - Live state tracking (HP/MP/EXP etc.)\n\n\
+            Presets are hot-tunable: when the user dislikes the writing style \
+            (e.g. too stiff), read the preset, adjust the offending fields, and \
+            write it back with import_preset — fix the source preset, don't just \
+            regenerate. The `tune_preset` prompt guides this. It is a best-effort \
+            enhancement and does not guarantee the resulting style.\n\n\
             Use list_tools to see available operations.".to_string(),
         );
         info
@@ -366,6 +371,10 @@ impl ServerHandler for AirpMcpServer {
                 Prompt::new("analyze_preset", Some("Agent-driven preset analysis workflow"), Some(vec![
                     arg("preset_id", "Imported preset ID", true),
                 ])),
+                Prompt::new("tune_preset", Some("Hot-tune a preset's style from user feedback (best-effort, not guaranteed)"), Some(vec![
+                    arg("preset_id", "Preset ID to tune", true),
+                    arg("feedback", "User's complaint about the output style, e.g. 'too stiff'", false),
+                ])),
                 Prompt::new("build_scene", Some("Multi-character scene assembly guide"), Some(vec![
                     arg("scene_id", "Scene ID", true),
                 ])),
@@ -396,6 +405,7 @@ impl ServerHandler for AirpMcpServer {
             "prompt_build_session_context" => self.prompt_build_session_context_messages(args).await,
             "seal_volume" => self.seal_volume_messages(args).await,
             "analyze_preset" => self.analyze_preset_messages(args).await,
+            "tune_preset" => self.tune_preset_messages(args).await,
             "build_scene" => self.build_scene_messages(args).await,
             "validate_card" => self.validate_card_messages(args).await,
             "validate_preset" => self.validate_preset_messages(args).await,
@@ -789,7 +799,8 @@ fn build_scene_system_prompt_tool() -> Tool {
             "properties": {
                 "scene_id": { "type": "string", "description": "Scene ID" },
                 "user_name": { "type": "string", "description": "Name for the user/player character", "default": "User" },
-                "preset_id": { "type": "string", "description": "Optional preset ID for style injection" }
+                "preset_id": { "type": "string", "description": "Optional preset ID for style injection" },
+                "style_enhance": { "type": "boolean", "description": "Opt-in style enhancement (default false): inject per-character dialogue examples + preset suffix as voice anchors. Enhancement only — grows the prompt and may improve style fidelity, but does NOT guarantee the final output style.", "default": false }
             },
             "required": ["scene_id"]
         })),

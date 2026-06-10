@@ -960,6 +960,11 @@ impl AirpMcpServer {
             .ok_or_else(|| AirpError::Validation("Missing scene_id".to_string()))?;
         let user_name = args["user_name"].as_str().unwrap_or("User");
         let preset_id = args["preset_id"].as_str();
+        // Opt-in style enhancement (non-mandatory, default off). Injects each
+        // character's dialogue examples + the preset suffix as voice anchors.
+        // Enhancement only: grows the prompt, may improve style fidelity, but
+        // does NOT guarantee the final output style.
+        let style_enhance = args["style_enhance"].as_bool().unwrap_or(false);
 
         let config = self.storage.load_scene(scene_id).await?;
         let char_store = CharacterStore::new(&self.storage);
@@ -995,6 +1000,12 @@ impl AirpMcpServer {
                     }
                     if !c.card.scenario.is_empty() {
                         info.push_str(&format!("[场景背景]: {}\n", c.card.scenario));
+                    }
+                    // Few-shot voice samples anchor the character's prose style.
+                    // Opt-in only (style_enhance) — single-char build always
+                    // includes these, but here we leave it to the caller.
+                    if style_enhance && !c.card.mes_example.is_empty() {
+                        info.push_str(&format!("[对话范例]:\n{}\n", c.card.mes_example));
                     }
                     info
                 }
@@ -1047,9 +1058,18 @@ impl AirpMcpServer {
             let preset_id_obj = PresetId::new(pid)?;
             let preset_store = PresetStore::new(&self.storage);
             if let Ok(preset) = preset_store.get(&preset_id_obj).await {
-                prompt.push_str("\n---\n");
-                prompt.push_str(&preset.config.system_prompt_prefix);
-                prompt.push('\n');
+                if !preset.config.system_prompt_prefix.is_empty() {
+                    prompt.push_str("\n---\n");
+                    prompt.push_str(&preset.config.system_prompt_prefix);
+                    prompt.push('\n');
+                }
+                // Suffix = post-history style anchor at the very end (e.g. "keep
+                // voice vivid"). Opt-in (style_enhance); single-char
+                // preset.build_system_prompt always honors it.
+                if style_enhance && !preset.config.system_prompt_suffix.is_empty() {
+                    prompt.push_str(&preset.config.system_prompt_suffix);
+                    prompt.push('\n');
+                }
             }
         }
 
