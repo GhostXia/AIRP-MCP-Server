@@ -45,7 +45,7 @@ cargo build --release
 - 并行调用策略（3x-4x 加速）
 - 多角色场景管理
 - 预设文风一键移植
-- 37 个工具 / 19 个资源 / 11 个提示词的速查表
+- 37 个工具 / 19 个资源 / 12 个提示词的速查表
 
 ---
 
@@ -85,13 +85,13 @@ cargo build --release
 | `get_scene` | 查看场景配置 |
 | `add_character_to_scene` | 向场景添加角色 |
 | `merge_lorebooks` | 合并多角色世界书（去重排序，纯算法） |
-| `build_scene_system_prompt` | 自动装配多角色场景系统提示词 |
+| `build_scene_system_prompt` | 自动装配多角色场景系统提示词（可选 `style_enhance` 注入对话范例+suffix 文风锚） |
 | `plugin_kv_get` | 读插件 KV（plugins/{name}/{key}.json，零 schema） |
 | `plugin_kv_set` | 写插件 KV（任意 JSON 值） |
 | `plugin_jsonl_append` | 插件 JSONL 追加（O(1) append） |
 | `plugin_jsonl_read` | 插件 JSONL 分页读取 |
 | `plugin_blob_write` | 插件任意文件写入（base64 / UTF-8 文本） |
-| `plugin_blob_read` | 插件任意文件读取（上限 4 MiB） |
+| `plugin_blob_read` | 插件任意文件读取（单次上限 256 KiB，护住 token 预算） |
 
 > **M_PLUGIN_DATA（戒律 4 开放接入）**：任何第三方插件、任何语言，取一个 `plugin_name` 命名空间即可在 `data/plugins/{plugin_name}/` 存取自己的数据 —— 无 manifest、无注册、无 schema 强制。AIRP 不解析、不校验、不索引其语义。
 
@@ -119,7 +119,7 @@ cargo build --release
 | `airp://plugins/{name}/files` | 插件文件相对路径列表（递归） |
 | `airp://plugins/{name}/data/{path}` | 插件文件内容（UTF-8；二进制用 plugin_blob_read） |
 
-### 11 个 MCP Prompts
+### 12 个 MCP Prompts
 
 | Prompt | 用途 |
 |:--|:--|
@@ -129,6 +129,7 @@ cargo build --release
 | `seal_volume` | 卷封存 Agent 指导 |
 | `build_scene` | 多角色场景装配（含并行加载引导） |
 | `analyze_preset` | 预设分析 3 步 workflow |
+| `tune_preset` | 按用户反馈热调预设文风（改预设源头，非洗输出；best-effort 不保证） |
 | `prompt_decompose_character` | 角色卡拆解的 Agent 指导（6 步） |
 | `prompt_enhance_analysis` | 增强分析的 Agent 指导（5 步） |
 | `prompt_build_session_context` | 会话上下文构建的 Agent 指导 |
