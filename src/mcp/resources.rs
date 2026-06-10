@@ -88,10 +88,91 @@ impl AirpMcpServer {
                 return self.read_gating_checkpoints(parts[0]).await;
             }
         }
-        
+
+        // M_PLUGIN_DATA: airp://plugins (list)
+        if uri == "airp://plugins" {
+            return self.read_plugins_list().await;
+        }
+
+        if let Some(rest) = uri.strip_prefix("airp://plugins/") {
+            let mut split = rest.splitn(2, '/');
+            let pname = split.next().unwrap_or("");
+            let sub = split.next().unwrap_or("");
+            crate::storage::validate_id_segment(pname)?;
+            if sub == "files" {
+                return self.read_plugin_files(pname).await;
+            }
+            if let Some(rel) = sub.strip_prefix("data/") {
+                return self.read_plugin_data(pname, rel).await;
+            }
+            return Err(crate::error::AirpError::Validation(
+                format!("Unknown plugin sub-resource: {}", uri)
+            ));
+        }
+
         Err(crate::error::AirpError::Validation(
             format!("Invalid resource URI: {}", uri)
         ))
+    }
+
+    // ── M_PLUGIN_DATA resource readers ────────────────────────────────────
+
+    async fn read_plugins_list(&self) -> Result<String> {
+        let plugins_dir = self.storage.plugins_dir();
+        let mut names: Vec<String> = Vec::new();
+        if plugins_dir.exists() {
+            let mut entries = tokio::fs::read_dir(&plugins_dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                    names.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+        names.sort();
+        serde_json::to_string_pretty(&names).map_err(Into::into)
+    }
+
+    async fn read_plugin_files(&self, plugin_name: &str) -> Result<String> {
+        crate::storage::validate_id_segment(plugin_name)?;
+        let dir = self.storage.plugin_dir(plugin_name);
+        let mut files: Vec<String> = Vec::new();
+        if dir.exists() {
+            let mut stack = vec![dir.clone()];
+            while let Some(cur) = stack.pop() {
+                let mut entries = tokio::fs::read_dir(&cur).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let path = entry.path();
+                    let ft = entry.file_type().await?;
+                    if ft.is_dir() {
+                        stack.push(path);
+                    } else if ft.is_file() {
+                        if let Ok(rel) = path.strip_prefix(&dir) {
+                            files.push(rel.to_string_lossy().replace('\\', "/"));
+                        }
+                    }
+                }
+            }
+        }
+        files.sort();
+        serde_json::to_string_pretty(&files).map_err(Into::into)
+    }
+
+    async fn read_plugin_data(&self, plugin_name: &str, rel_path: &str) -> Result<String> {
+        crate::storage::validate_id_segment(plugin_name)?;
+        let dir = self.storage.plugin_dir(plugin_name);
+        if !dir.exists() {
+            return Err(crate::error::AirpError::Validation(
+                format!("plugin `{}` does not exist", plugin_name)));
+        }
+        let target = self.storage.safe_resolve_for_write(&dir, rel_path)?;
+        if !target.is_file() {
+            return Err(crate::error::AirpError::Validation(
+                format!("file not found: plugins/{}/{}", plugin_name, rel_path)));
+        }
+        tokio::fs::read_to_string(&target).await.map_err(|_| {
+            crate::error::AirpError::Validation(
+                "file is not valid UTF-8; use plugin_blob_read tool for binary".into())
+        })
     }
     
     async fn read_characters_list(&self) -> Result<String> {

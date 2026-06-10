@@ -242,6 +242,18 @@ impl Storage {
 
         Ok(resolved)
     }
+
+    // ── M_PLUGIN_DATA: zero-schema plugin data namespace ──────────────────
+    // Any third-party plugin (any language) stores its own data under
+    // data/plugins/{plugin_name}/ — no manifest, no registration, no schema.
+
+    pub fn plugins_dir(&self) -> PathBuf {
+        self.data_root.join("plugins")
+    }
+
+    pub fn plugin_dir(&self, plugin_name: &str) -> PathBuf {
+        self.plugins_dir().join(plugin_name)
+    }
 }
 
 pub fn validate_id_segment(id: &str) -> Result<()> {
