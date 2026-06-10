@@ -19,6 +19,12 @@ pub mod preset_regex;
 
 pub use decompose::{CharacterDecomposer, PresetDecomposer, DecomposeConfig, DecomposeResult};
 
+/// Single-read cap (bytes) for any tool/resource that returns file content into
+/// the model context. Guards against a plugin storing a huge blob/JSON that,
+/// when read whole, blows the token budget. Oversized reads error or truncate
+/// with a `[PARTIAL: ...]` marker so the caller pages instead of dumping.
+pub(crate) const MAX_READ_BYTES: usize = 256 * 1024;
+
 #[derive(Clone)]
 pub struct AirpMcpServer {
     pub storage: Arc<Storage>,
@@ -876,7 +882,7 @@ fn plugin_blob_write_tool() -> Tool {
 fn plugin_blob_read_tool() -> Tool {
     Tool::new(
         "plugin_blob_read",
-        "Read a plugin file. Default returns content_base64; as_text=true returns content_text (UTF-8). Single-read cap 4 MiB.",
+        "Read a plugin file. Default returns content_base64; as_text=true returns content_text (UTF-8). Single-read cap 256 KiB — larger files error; read from filesystem directly or page via offset tooling.",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
