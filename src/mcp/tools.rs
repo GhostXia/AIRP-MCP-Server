@@ -1246,6 +1246,12 @@ impl AirpMcpServer {
 
         let path = self.storage.plugin_dir(plugin_name).join(format!("{}.json", key));
         let (present, value) = if path.exists() {
+            let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+            if size > crate::mcp::MAX_READ_BYTES as u64 {
+                return Err(AirpError::Validation(format!(
+                    "KV value {}.json is {} bytes, exceeds single-read cap {} bytes; use plugin_blob_read or read from filesystem directly",
+                    key, size, crate::mcp::MAX_READ_BYTES)));
+            }
             let raw = tokio::fs::read_to_string(&path).await?;
             let v: serde_json::Value = serde_json::from_str(strip_utf8_bom(&raw))
                 .map_err(|e| AirpError::Validation(format!("KV file {}.json is not valid JSON: {}", key, e)))?;
@@ -1345,11 +1351,19 @@ impl AirpMcpServer {
         let raw = tokio::fs::read_to_string(&target).await?;
         let all: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
         let total = all.len();
-        let lines: Vec<serde_json::Value> = all.into_iter()
-            .skip(offset)
-            .take(limit)
-            .map(|l| serde_json::from_str(l).unwrap_or_else(|_| serde_json::Value::String(l.to_owned())))
-            .collect();
+        // Cap by cumulative bytes too, not just line count: 1000 huge lines would
+        // still blow the token budget. Stop before exceeding MAX_READ_BYTES.
+        let mut byte_budget = crate::mcp::MAX_READ_BYTES;
+        let mut truncated = false;
+        let mut lines: Vec<serde_json::Value> = Vec::new();
+        for l in all.into_iter().skip(offset).take(limit) {
+            if l.len() > byte_budget {
+                truncated = true;
+                break;
+            }
+            byte_budget -= l.len();
+            lines.push(serde_json::from_str(l).unwrap_or_else(|_| serde_json::Value::String(l.to_owned())));
+        }
         let returned = lines.len();
         Ok(serde_json::json!({
             "plugin_name": plugin_name,
@@ -1357,6 +1371,7 @@ impl AirpMcpServer {
             "total_lines": total,
             "offset": offset,
             "returned": returned,
+            "truncated": truncated,
             "lines": lines,
         }).to_string())
     }
@@ -1392,7 +1407,7 @@ impl AirpMcpServer {
     }
 
     pub async fn handle_plugin_blob_read(&self, args: Value) -> Result<String> {
-        const MAX_BLOB_READ: u64 = 4 * 1024 * 1024;
+        const MAX_BLOB_READ: u64 = crate::mcp::MAX_READ_BYTES as u64;
         let plugin_name = args["plugin_name"].as_str()
             .ok_or_else(|| AirpError::Validation("Missing plugin_name".into()))?;
         let rel_path = args["rel_path"].as_str()
