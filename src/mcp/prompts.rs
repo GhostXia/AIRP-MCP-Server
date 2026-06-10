@@ -539,6 +539,48 @@ If you find fragments you cannot identify, do NOT delete them. Instead:\n\
         Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
     }
 
+    pub async fn tune_preset_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
+        let preset_id = args["preset_id"].as_str()
+            .ok_or_else(|| crate::error::AirpError::Validation("Missing preset_id".to_string()))?;
+        let feedback = args["feedback"].as_str().unwrap_or(
+            "The user finds the current output style unsatisfactory.");
+
+        let content = format!(r#"You are hot-tuning preset `{pid}` based on the user's style feedback.
+
+## User feedback
+{feedback}
+
+## Why this works
+The preset was successfully injected — the model already writes in the preset's
+style. So the fix is the preset CONTENT itself, not regeneration. Editing the
+source preset is permanent and reused every turn (cheap, high-leverage). Do NOT
+post-process the generated text.
+
+## Steps
+1. Read the current preset: `airp://presets/{pid}/raw`
+2. Diagnose what in the preset causes the complaint. Common culprits:
+   - **Stiff / lifeless prose** on a strong model: the preset may carry
+     model-specific suppression (anti-verbosity, anti-divergence, anti-refusal
+     scaffolding) tuned for a DIFFERENT model. On a model that is already
+     controlled, that over-suppresses → flat. Relax or remove those parts.
+   - Missing positive style direction → add an explicit vivid-prose / sensory /
+     pacing instruction in `system_prompt_prefix` or `system_prompt_suffix`.
+   - No voice anchors → ensure the character card's dialogue examples are used
+     (build_scene_system_prompt supports `style_enhance: true`).
+3. Apply the minimal change. Write it back with `import_preset` (full JSON) —
+   keep every field you are not changing.
+4. Report exactly what you changed and why, so the user can judge / revert.
+
+## Boundaries
+- Change only what the feedback implies. Do not rewrite the whole preset.
+- This is a best-effort enhancement: it improves the odds, it does NOT guarantee
+  the resulting style. If the first tune misses, ask the user to refine the
+  feedback and iterate."#,
+            pid = preset_id, feedback = feedback);
+
+        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+    }
+
     pub async fn validate_preset_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
         let preset_id = args["preset_id"].as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing preset_id".to_string()))?;
