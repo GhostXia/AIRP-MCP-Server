@@ -134,6 +134,12 @@ impl ServerHandler for AirpMcpServer {
                 add_character_to_scene_tool(),
                 merge_lorebooks_tool(),
                 build_scene_system_prompt_tool(),
+                plugin_kv_get_tool(),
+                plugin_kv_set_tool(),
+                plugin_jsonl_append_tool(),
+                plugin_jsonl_read_tool(),
+                plugin_blob_write_tool(),
+                plugin_blob_read_tool(),
             ],
         })
     }
@@ -180,6 +186,12 @@ impl ServerHandler for AirpMcpServer {
             "add_character_to_scene" => self.handle_add_character_to_scene(args).await,
             "merge_lorebooks" => self.handle_merge_lorebooks(args).await,
             "build_scene_system_prompt" => self.handle_build_scene_system_prompt(args).await,
+            "plugin_kv_get" => self.handle_plugin_kv_get(args).await,
+            "plugin_kv_set" => self.handle_plugin_kv_set(args).await,
+            "plugin_jsonl_append" => self.handle_plugin_jsonl_append(args).await,
+            "plugin_jsonl_read" => self.handle_plugin_jsonl_read(args).await,
+            "plugin_blob_write" => self.handle_plugin_blob_write(args).await,
+            "plugin_blob_read" => self.handle_plugin_blob_read(args).await,
             _ => Err(AirpError::Mcp(format!("Unknown tool: {}", tool_name))),
         };
 
@@ -206,6 +218,9 @@ impl ServerHandler for AirpMcpServer {
             }, Resource {
                 raw: RawResource::new("airp://scenes", "Scenes List"),
                 annotations: None,
+            }, Resource {
+                raw: RawResource::new("airp://plugins", "Plugin Namespaces List"),
+                annotations: None,
             }],
         })
     }
@@ -229,6 +244,8 @@ impl ServerHandler for AirpMcpServer {
             ("airp://presets/{preset_id}/regex", "Preset Regex Scripts"),
             ("airp://scenes/{scene_id}", "Scene Configuration"),
             ("airp://gating/{character_id}/checkpoints", "Gating Checkpoints"),
+            ("airp://plugins/{plugin_name}/files", "Plugin Files List"),
+            ("airp://plugins/{plugin_name}/data/{path}", "Plugin Data File"),
         ];
 
         Ok(ListResourceTemplatesResult {
@@ -769,6 +786,105 @@ fn build_scene_system_prompt_tool() -> Tool {
                 "preset_id": { "type": "string", "description": "Optional preset ID for style injection" }
             },
             "required": ["scene_id"]
+        })),
+    )
+}
+
+// ── M_PLUGIN_DATA tool definitions (zero-schema, any third-party plugin) ──
+
+fn plugin_kv_get_tool() -> Tool {
+    Tool::new(
+        "plugin_kv_get",
+        "Read a plugin KV value (plugins/{plugin_name}/{key}.json). Missing key returns present=false, value=null (no error).",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plugin_name": { "type": "string", "description": "Plugin namespace (self-chosen unique id)" },
+                "key": { "type": "string", "description": "KV key (leaf name, no path separators)" }
+            },
+            "required": ["plugin_name", "key"]
+        })),
+    )
+}
+
+fn plugin_kv_set_tool() -> Tool {
+    Tool::new(
+        "plugin_kv_set",
+        "Write a plugin KV value (plugins/{plugin_name}/{key}.json). value_json is any valid JSON value; AIRP does not parse semantics.",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plugin_name": { "type": "string", "description": "Plugin namespace" },
+                "key": { "type": "string", "description": "KV key (leaf name)" },
+                "value_json": { "type": "string", "description": "Any valid JSON value (object/array/scalar)" }
+            },
+            "required": ["plugin_name", "key", "value_json"]
+        })),
+    )
+}
+
+fn plugin_jsonl_append_tool() -> Tool {
+    Tool::new(
+        "plugin_jsonl_append",
+        "Append one line to a plugin JSONL file (O(1) append). line_json is compacted to a single line. file may contain subdirectories; .. and absolute paths are rejected.",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plugin_name": { "type": "string", "description": "Plugin namespace" },
+                "file": { "type": "string", "description": "Relative path under plugins/{name}/, e.g. events.jsonl" },
+                "line_json": { "type": "string", "description": "One valid JSON value" }
+            },
+            "required": ["plugin_name", "file", "line_json"]
+        })),
+    )
+}
+
+fn plugin_jsonl_read_tool() -> Tool {
+    Tool::new(
+        "plugin_jsonl_read",
+        "Read lines from a plugin JSONL file (offset 0-based, limit default 100 / max 1000). Non-JSON lines returned as raw strings. Missing file returns total_lines=0.",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plugin_name": { "type": "string", "description": "Plugin namespace" },
+                "file": { "type": "string", "description": "Relative path under plugins/{name}/" },
+                "offset": { "type": "integer", "description": "Start line (0-based)", "default": 0 },
+                "limit": { "type": "integer", "description": "Max lines (clamped 1..1000)", "default": 100 }
+            },
+            "required": ["plugin_name", "file"]
+        })),
+    )
+}
+
+fn plugin_blob_write_tool() -> Tool {
+    Tool::new(
+        "plugin_blob_write",
+        "Write an arbitrary file to plugins/{plugin_name}/{rel_path}. Provide exactly one of content_base64 (binary) or content_text (UTF-8).",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plugin_name": { "type": "string", "description": "Plugin namespace" },
+                "rel_path": { "type": "string", "description": "Relative path under plugins/{name}/, e.g. assets/map.png" },
+                "content_base64": { "type": "string", "description": "Base64 content (binary)" },
+                "content_text": { "type": "string", "description": "UTF-8 text content (skips base64 overhead)" }
+            },
+            "required": ["plugin_name", "rel_path"]
+        })),
+    )
+}
+
+fn plugin_blob_read_tool() -> Tool {
+    Tool::new(
+        "plugin_blob_read",
+        "Read a plugin file. Default returns content_base64; as_text=true returns content_text (UTF-8). Single-read cap 4 MiB.",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plugin_name": { "type": "string", "description": "Plugin namespace" },
+                "rel_path": { "type": "string", "description": "Relative path under plugins/{name}/" },
+                "as_text": { "type": "boolean", "description": "true = UTF-8 text, false = base64 (default)", "default": false }
+            },
+            "required": ["plugin_name", "rel_path"]
         })),
     )
 }

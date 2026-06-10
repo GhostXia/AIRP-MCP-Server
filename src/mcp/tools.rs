@@ -1230,6 +1230,207 @@ impl AirpMcpServer {
         })
         .to_string())
     }
+
+    // ── M_PLUGIN_DATA: zero-schema plugin data primitives ─────────────────
+    // Any third-party plugin (any language) stores its own data under
+    // data/plugins/{plugin_name}/ with no manifest / registration / schema.
+    // AIRP never parses, validates, or indexes the data's semantics.
+
+    pub async fn handle_plugin_kv_get(&self, args: Value) -> Result<String> {
+        let plugin_name = args["plugin_name"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing plugin_name".into()))?;
+        let key = args["key"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing key".into()))?;
+        validate_id_segment(plugin_name)?;
+        validate_id_segment(key)?;
+
+        let path = self.storage.plugin_dir(plugin_name).join(format!("{}.json", key));
+        let (present, value) = if path.exists() {
+            let raw = tokio::fs::read_to_string(&path).await?;
+            let v: serde_json::Value = serde_json::from_str(strip_utf8_bom(&raw))
+                .map_err(|e| AirpError::Validation(format!("KV file {}.json is not valid JSON: {}", key, e)))?;
+            (true, v)
+        } else {
+            (false, serde_json::Value::Null)
+        };
+        Ok(serde_json::json!({
+            "plugin_name": plugin_name,
+            "key": key,
+            "present": present,
+            "value": value,
+        }).to_string())
+    }
+
+    pub async fn handle_plugin_kv_set(&self, args: Value) -> Result<String> {
+        let plugin_name = args["plugin_name"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing plugin_name".into()))?;
+        let key = args["key"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing key".into()))?;
+        let value_json = args["value_json"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing value_json".into()))?;
+        validate_id_segment(plugin_name)?;
+        validate_id_segment(key)?;
+        let _: serde_json::Value = serde_json::from_str(value_json)
+            .map_err(|e| AirpError::Validation(format!("value_json is not valid JSON: {}", e)))?;
+
+        let dir = self.storage.plugin_dir(plugin_name);
+        tokio::fs::create_dir_all(&dir).await?;
+        let path = dir.join(format!("{}.json", key));
+        tokio::fs::write(&path, value_json.as_bytes()).await?;
+        Ok(serde_json::json!({
+            "plugin_name": plugin_name,
+            "key": key,
+            "bytes_written": value_json.len(),
+        }).to_string())
+    }
+
+    pub async fn handle_plugin_jsonl_append(&self, args: Value) -> Result<String> {
+        let plugin_name = args["plugin_name"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing plugin_name".into()))?;
+        let file = args["file"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing file".into()))?;
+        let line_json = args["line_json"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing line_json".into()))?;
+        validate_id_segment(plugin_name)?;
+        let parsed: serde_json::Value = serde_json::from_str(line_json)
+            .map_err(|e| AirpError::Validation(format!("line_json is not valid JSON: {}", e)))?;
+        let compact = serde_json::to_string(&parsed)?;
+
+        let dir = self.storage.plugin_dir(plugin_name);
+        tokio::fs::create_dir_all(&dir).await?;
+        let target = self.storage.safe_resolve_for_write(&dir, file)?;
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        use tokio::io::AsyncWriteExt;
+        let mut f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&target)
+            .await?;
+        f.write_all(compact.as_bytes()).await?;
+        f.write_all(b"\n").await?;
+        Ok(serde_json::json!({
+            "plugin_name": plugin_name,
+            "file": file,
+            "bytes_appended": compact.len() + 1,
+        }).to_string())
+    }
+
+    pub async fn handle_plugin_jsonl_read(&self, args: Value) -> Result<String> {
+        let plugin_name = args["plugin_name"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing plugin_name".into()))?;
+        let file = args["file"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing file".into()))?;
+        validate_id_segment(plugin_name)?;
+        let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+        let limit = (args["limit"].as_u64().unwrap_or(100) as usize).clamp(1, 1000);
+
+        let dir = self.storage.plugin_dir(plugin_name);
+        let empty = |total: usize| serde_json::json!({
+            "plugin_name": plugin_name,
+            "file": file,
+            "total_lines": total,
+            "offset": offset,
+            "returned": 0,
+            "lines": [],
+        }).to_string();
+        if !dir.exists() {
+            return Ok(empty(0));
+        }
+        let target = self.storage.safe_resolve_for_write(&dir, file)?;
+        if !target.exists() {
+            return Ok(empty(0));
+        }
+        let raw = tokio::fs::read_to_string(&target).await?;
+        let all: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+        let total = all.len();
+        let lines: Vec<serde_json::Value> = all.into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|_| serde_json::Value::String(l.to_owned())))
+            .collect();
+        let returned = lines.len();
+        Ok(serde_json::json!({
+            "plugin_name": plugin_name,
+            "file": file,
+            "total_lines": total,
+            "offset": offset,
+            "returned": returned,
+            "lines": lines,
+        }).to_string())
+    }
+
+    pub async fn handle_plugin_blob_write(&self, args: Value) -> Result<String> {
+        let plugin_name = args["plugin_name"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing plugin_name".into()))?;
+        let rel_path = args["rel_path"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing rel_path".into()))?;
+        validate_id_segment(plugin_name)?;
+        let content_base64 = args["content_base64"].as_str();
+        let content_text = args["content_text"].as_str();
+        let (bytes, encoding) = match (content_base64, content_text) {
+            (Some(b64), None) => (base64_decode(b64.trim())?, "base64"),
+            (None, Some(text)) => (text.as_bytes().to_vec(), "text"),
+            _ => return Err(AirpError::Validation(
+                "exactly one of content_base64 / content_text must be provided".into())),
+        };
+
+        let dir = self.storage.plugin_dir(plugin_name);
+        tokio::fs::create_dir_all(&dir).await?;
+        let target = self.storage.safe_resolve_for_write(&dir, rel_path)?;
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&target, &bytes).await?;
+        Ok(serde_json::json!({
+            "plugin_name": plugin_name,
+            "rel_path": rel_path,
+            "bytes_written": bytes.len(),
+            "encoding": encoding,
+        }).to_string())
+    }
+
+    pub async fn handle_plugin_blob_read(&self, args: Value) -> Result<String> {
+        const MAX_BLOB_READ: u64 = 4 * 1024 * 1024;
+        let plugin_name = args["plugin_name"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing plugin_name".into()))?;
+        let rel_path = args["rel_path"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing rel_path".into()))?;
+        validate_id_segment(plugin_name)?;
+        let as_text = args["as_text"].as_bool().unwrap_or(false);
+
+        let dir = self.storage.plugin_dir(plugin_name);
+        if !dir.exists() {
+            return Err(AirpError::Validation(format!("plugin `{}` does not exist", plugin_name)));
+        }
+        let target = self.storage.safe_resolve_for_write(&dir, rel_path)?;
+        if !target.is_file() {
+            return Err(AirpError::Validation(format!("file not found: plugins/{}/{}", plugin_name, rel_path)));
+        }
+        let size = tokio::fs::metadata(&target).await.map(|m| m.len()).unwrap_or(0);
+        if size > MAX_BLOB_READ {
+            return Err(AirpError::Validation(format!(
+                "blob size {} exceeds single-read cap {} bytes; read plugins/{}/{} from filesystem directly",
+                size, MAX_BLOB_READ, plugin_name, rel_path)));
+        }
+        let bytes = tokio::fs::read(&target).await?;
+        let mut out = serde_json::json!({
+            "plugin_name": plugin_name,
+            "rel_path": rel_path,
+            "size": bytes.len(),
+        });
+        if as_text {
+            let text = String::from_utf8(bytes)
+                .map_err(|_| AirpError::Validation("file is not valid UTF-8; use as_text=false for base64".into()))?;
+            out["content_text"] = serde_json::Value::String(text);
+        } else {
+            use base64::Engine;
+            out["content_base64"] = serde_json::Value::String(
+                base64::engine::general_purpose::STANDARD.encode(&bytes));
+        }
+        Ok(out.to_string())
+    }
 }
 
 fn base64_decode(input: &str) -> Result<Vec<u8>> {
