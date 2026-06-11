@@ -1,5 +1,7 @@
 # AIRP MCP Server
 
+> 致谢：本项目的部分理念与实践，参考、借鉴自 Discord 社区 **「类脑ΟΔΥΣΣΕΙΑ」** 内的相关讨论与教程，并与社区成果相互参照。
+
 > **AIRP = AI Roleplay Data Manager**
 
 [![CI](https://github.com/GhostXia/AIRP-MCP-Server/actions/workflows/ci.yml/badge.svg)](https://github.com/GhostXia/AIRP-MCP-Server/actions/workflows/ci.yml)
