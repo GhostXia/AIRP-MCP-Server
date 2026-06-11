@@ -451,16 +451,19 @@ impl ServerHandler for AirpMcpServer {
 fn import_card_tool() -> Tool {
     Tool::new(
         "import_card",
-        "Import a character card from PNG data",
+        "Import a character card from a PNG. Provide exactly one of: png_path (RECOMMENDED — server reads the file directly, so the base64 never enters the model context and cannot burn tokens) or png_base64. Input capped at 10 MiB.",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
+                "png_path": {
+                    "type": "string",
+                    "description": "Filesystem path to the PNG. Preferred: AIRP reads + decodes it server-side (no base64 in context). Read server-side — keep the HTTP transport on a trusted LAN."
+                },
                 "png_base64": {
                     "type": "string",
-                    "description": "Base64-encoded PNG character card"
+                    "description": "Base64-encoded PNG. Use only when the file is not reachable by path; encoding a large card into base64 floods the model context."
                 }
-            },
-            "required": ["png_base64"]
+            }
         })),
     )
 }

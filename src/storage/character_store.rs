@@ -198,7 +198,11 @@ impl<'a> CharacterStore<'a> {
     async fn parse_png_card(&self, png_data: &[u8]) -> Result<CharacterCard> {
         use std::io::Cursor;
         
-        let decoder = png::Decoder::new(Cursor::new(png_data));
+        let mut decoder = png::Decoder::new(Cursor::new(png_data));
+        // Bound decoder allocation to limit zlib decompression-bomb expansion.
+        let mut limits = png::Limits::default();
+        limits.bytes = 64 * 1024 * 1024;
+        decoder.set_limits(limits);
         let reader = decoder.read_info()
             .map_err(|e| AirpError::PngParse(e.to_string()))?;
         

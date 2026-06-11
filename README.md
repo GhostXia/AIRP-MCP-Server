@@ -25,8 +25,10 @@ cargo build --release
 # Stdio 模式（推荐：Claude Code / Cursor / pi）
 ./target/release/airp-mcp mcp --data-dir ./data
 
-# HTTP 模式
-./target/release/airp-mcp serve --bind 127.0.0.1:3000 --data-dir ./data
+# HTTP 模式（局域网：电脑跑后端、手机同 wifi 对话）
+./target/release/airp-mcp serve --bind 0.0.0.0:3000 --data-dir ./data
+# 局域网暴露建议开鉴权：所有 /mcp/v1 请求须带 Authorization: Bearer <密钥>
+AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 --data-dir ./data
 ```
 
 ### MCP Client 配置
@@ -61,7 +63,7 @@ cargo build --release
 
 | 类别 | 工具 | 用途 |
 |:--|:--|:--|
-| 角色卡 | `import_card` | 从 base64 PNG 导入 SillyTavern 角色卡（服务端确定性 PNG→JSON，免反复读 PNG 烧 token） |
+| 角色卡 | `import_card` | 导入 SillyTavern 角色卡。**推荐 `png_path`**（服务端读盘解析，base64 不进上下文、不烧 token）或 `png_base64`；≤ 10 MiB |
 | 角色卡 | `list_characters` | 列出所有角色 |
 | 角色卡 | `get_character` | 查看角色详情 |
 | 角色卡 | `delete_character` | 删除角色及所有数据 |
@@ -231,6 +233,19 @@ cargo fmt
 
 - **CI**：GitHub Actions 在每次 push / PR 跑 `cargo build` + `cargo test --test plugin_data_test`（见徽章）。
 - 全量 `cargo test` 暂缓：`tests/integration_test.rs` 在 main 上预存损坏（`crate::` 路径 + PNG zTXt/base64 测试辅助），属独立 follow-up。
+
+## 安全与部署
+
+AIRP 的威胁模型假设 **本地、单用户、stdio / loopback** 运行。基于此：
+
+- **路径安全**：所有插件/预设的读写经**组件式**校验 —— 拒 `..` 逃逸、拒绝对路径、拒符号链接，结果锁在 `data/` 根内（`Storage::safe_resolve_for_write`）。
+- **输入限制**：`import_card` 的 PNG ≤ 10 MiB（`png_path` 走 metadata 预检，炸弹文件不读即拒），PNG 解码器设分配上限（挡 zlib 压缩炸弹）；工具单次读 ≤ 256 KiB；预设 raw / JSONL 超限截断或分页。
+- **PNG 导入用 `png_path` 而非 `png_base64`**：让 AIRP **服务端直接读盘解析**，base64 **永不进模型上下文** —— 否则 Agent 为产生 base64 得先把 PNG 读进上下文（10 MiB 卡 ≈ 13 MiB 文本），**烧光 token**。
+- **插件信任模型**：`data/plugins/` 是**零 schema、开放接入**（戒律 4）—— AIRP 不解析、不校验、不沙箱化插件数据语义。插件写入被限制在自己的 `plugins/{name}/` 命名空间内（拒 `..`/绝对路径/符号链接），**但内容本身不受信任**。⚠️ **只安装可信来源的插件。**
+- **HTTP 暴露：局域网 OK，公网 NO**。`serve --bind` 支持同 wifi 下「电脑跑后端 + 手机对话」这类用法。
+  - **可选 bearer 鉴权**：设环境变量 `AIRP_HTTP_TOKEN=<你的密钥>`，之后所有 `/mcp/v1` 请求须带 `Authorization: Bearer <密钥>`（`/health` 不校验）。**LAN 暴露时强烈建议设置** —— 否则同网段任何设备都能调读写接口（含 `png_path` 服务端读文件）。绑定非 loopback 且未设 token 时会有启动警告。
+  - **切勿绑定公网 IP 或做公网端口转发**。需要远程访问请走 VPN / SSH 隧道，别裸暴露。
+- **备份**：数据是本地文件，建议定期备份 `data/` 目录。
 
 ## 隐私
 

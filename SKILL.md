@@ -109,8 +109,10 @@ AIRP 的角色：
 
 ### Step 1: 导入角色卡
 ```
-import_card(png_base64="<base64-encoded PNG>")
+import_card(png_path="./card/角色.png")    # 推荐：服务端读盘，base64 不进上下文
 ```
+> ⚠️ **别自己 Read PNG 再 base64**：一张 10 MiB 卡 ≈ 13 MiB base64 文本灌进上下文，**烧光 token**（社区实测「蓝屏级卡死」）。用 `png_path` 让 AIRP 服务端读+解析；仅当文件路径不可达时才退回 `png_base64`。
+
 如果没有角色卡，用 `list_characters()` 查看已有卡片。
 
 ### Step 2: 启动会话
@@ -136,7 +138,7 @@ start_session(character_id="<id>", preset_id="<可选预设>")
 
 | 工具 | 用法 | 何时用 |
 |:--|:--|:--|
-| `import_card` | `import_card(png_base64)` | 导入新角色卡 |
+| `import_card` | `import_card(png_path)` 推荐 / `png_base64` 退回 | 导入新角色卡（`png_path` 服务端读盘，不烧 token） |
 | `list_characters` | 无参数 | 查看所有已导入角色 |
 | `get_character` | `get_character(character_id)` | 查看角色详情 |
 | `delete_character` | `delete_character(character_id)` | 删除角色及所有数据 |
@@ -401,7 +403,7 @@ rollback_messages(character_id, session_id, n=3)
 
 | 类别 | 工具 | 参数 |
 |:--|:--|:--|
-| 角色 | `import_card` | png_base64 |
+| 角色 | `import_card` | png_path（推荐）/ png_base64 |
 | 角色 | `list_characters` | — |
 | 角色 | `get_character` | character_id |
 | 角色 | `delete_character` | character_id |
