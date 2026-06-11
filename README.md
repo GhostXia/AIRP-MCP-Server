@@ -45,13 +45,13 @@ cargo build --release
 - 并行调用策略（3x-4x 加速）
 - 多角色场景管理
 - 预设文风一键移植
-- 37 个工具 / 19 个资源 / 12 个提示词的速查表
+- 38 个工具 / 19 个资源 / 12 个提示词的速查表
 
 ---
 
 ## 功能总览
 
-### 37 个 MCP Tools
+### 38 个 MCP Tools
 
 | 工具 | 用途 |
 |:--|:--|
@@ -86,6 +86,7 @@ cargo build --release
 | `add_character_to_scene` | 向场景添加角色 |
 | `merge_lorebooks` | 合并多角色世界书（去重排序，纯算法） |
 | `build_scene_system_prompt` | 自动装配多角色场景系统提示词（可选 `style_enhance` 注入对话范例+suffix 文风锚） |
+| `export_context_bundle` | 导出自包含成品上下文包（context.md + raw sidecar），交接给隔离 subagent；未知捆绑内容原样旁路不解析 |
 | `plugin_kv_get` | 读插件 KV（plugins/{name}/{key}.json，零 schema） |
 | `plugin_kv_set` | 写插件 KV（任意 JSON 值） |
 | `plugin_jsonl_append` | 插件 JSONL 追加（O(1) append） |

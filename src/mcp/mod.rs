@@ -95,11 +95,27 @@ impl ServerHandler for AirpMcpServer {
             - World books / Lorebooks (keyword-triggered knowledge)\n\
             - AI presets (system prompts, regex filters)\n\
             - Live state tracking (HP/MP/EXP etc.)\n\n\
-            Presets are hot-tunable: when the user dislikes the writing style \
-            (e.g. too stiff), read the preset, adjust the offending fields, and \
-            write it back with import_preset — fix the source preset, don't just \
-            regenerate. The `tune_preset` prompt guides this. It is a best-effort \
-            enhancement and does not guarantee the resulting style.\n\n\
+            Before using these tools, weigh the trade-offs of these high-leverage \
+            decisions. These are suggestions, not rules — you still decide, but \
+            decide informed by the cost of NOT considering them:\n\
+            1. Immersive RP prose quality -> consider export_context_bundle and \
+            writing in an ISOLATED subagent, not the orchestrator context. Why: \
+            the orchestrator's coding-assistant context flattens prose. Cost if \
+            skipped: even a correctly injected preset reads stiff/out-of-character.\n\
+            2. User dislikes the writing style -> consider tune_preset to fix the \
+            SOURCE preset, not regeneration or output post-processing. Why: the \
+            style already transferred; the problem is preset content. Cost if \
+            skipped: you only launder the output (treats the symptom) and waste \
+            tokens.\n\
+            3. Bulk reads / long sessions -> prefer scoped, paged reads (small \
+            get_recent_context n; keyword apply_lorebook over full dumps) and \
+            seal_volume to archive+clear long sessions. Why: AIRP data can be \
+            large. Cost if skipped: you blow the token budget by pulling whole \
+            files/histories into context.\n\
+            4. World knowledge -> trigger lorebook by keyword (apply_lorebook); \
+            don't preload the whole book. Why: entries are keyword-gated by \
+            design. Cost if skipped: wasted tokens AND the character 'knows' \
+            things it shouldn't, breaking immersion.\n\n\
             Use list_tools to see available operations.".to_string(),
         );
         info
@@ -145,6 +161,7 @@ impl ServerHandler for AirpMcpServer {
                 add_character_to_scene_tool(),
                 merge_lorebooks_tool(),
                 build_scene_system_prompt_tool(),
+                export_context_bundle_tool(),
                 plugin_kv_get_tool(),
                 plugin_kv_set_tool(),
                 plugin_jsonl_append_tool(),
@@ -197,6 +214,7 @@ impl ServerHandler for AirpMcpServer {
             "add_character_to_scene" => self.handle_add_character_to_scene(args).await,
             "merge_lorebooks" => self.handle_merge_lorebooks(args).await,
             "build_scene_system_prompt" => self.handle_build_scene_system_prompt(args).await,
+            "export_context_bundle" => self.handle_export_context_bundle(args).await,
             "plugin_kv_get" => self.handle_plugin_kv_get(args).await,
             "plugin_kv_set" => self.handle_plugin_kv_set(args).await,
             "plugin_jsonl_append" => self.handle_plugin_jsonl_append(args).await,
@@ -803,6 +821,23 @@ fn build_scene_system_prompt_tool() -> Tool {
                 "style_enhance": { "type": "boolean", "description": "Opt-in style enhancement (default false): inject per-character dialogue examples + preset suffix as voice anchors. Enhancement only — grows the prompt and may improve style fidelity, but does NOT guarantee the final output style.", "default": false }
             },
             "required": ["scene_id"]
+        })),
+    )
+}
+
+fn export_context_bundle_tool() -> Tool {
+    Tool::new(
+        "export_context_bundle",
+        "Export a self-contained, placeholder-free RP context bundle (Markdown + raw sidecars) for handoff to an ISOLATED subagent. Unlike decompose_* (analysis scaffold with TODO placeholders), this is finished and ready to feed as a subagent's system context. Known fields assembled into context.md; raw preset prompts[] and card.extensions passed through verbatim to sidecars (not interpreted). Generic Markdown — no host-specific skill format.",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "character_id": { "type": "string", "description": "Character ID to export" },
+                "preset_id": { "type": "string", "description": "Optional preset; prefix/suffix assembled into prose, full preset → preset_raw.json sidecar" },
+                "include_lorebook": { "type": "boolean", "description": "Append all enabled lorebook entries into context.md (default false; grows the bundle)", "default": false },
+                "out_dir": { "type": "string", "description": "Output base dir; bundle written to {out_dir}/{character_id}/ (default ./exports)", "default": "./exports" }
+            },
+            "required": ["character_id"]
         })),
     )
 }

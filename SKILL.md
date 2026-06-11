@@ -41,6 +41,43 @@
 
 ---
 
+## 0.5 使用前·优先评估清单（决策提示，非强制）
+
+> 下面不是规则，是**决策提示**。AIRP 无法、也不会强制你执行任何动作。
+> 但请在动手前**先权衡得失**——这里给出「为何要先想」和「不先想的代价」，
+> 让你基于后果**知情地自行决断**，而非被命令。
+
+### ① 沉浸式 RP 文笔质量
+- **建议**：用 `export_context_bundle` 产出成品上下文，交给**隔离的 subagent** 书写；不要在编排主上下文里直接写。
+- **为何要先想**：主 Agent（你）的上下文塞满编程身份、工具 schema、harness 提醒；直接写 RP 时这层编程腔会压扁文笔。
+- **不先想的代价**：即使预设文风已成功注入，输出仍**僵硬、出戏**（"死人化"）。这是文笔质量问题，不是指令遵循问题——靠改提示词救不回来。
+- 你仍自行决断：单模型客户端、轻量短场景可跳过，直接写。
+
+### ② 用户嫌文风僵硬 / 出戏
+- **建议**：用 `tune_preset` 改**预设源头**；不要靠重生成或对输出做后处理。
+- **为何要先想**：风格其实**已经成功迁移**（特供预设会盖过宿主模型本味）。问题在预设**内容**，常是跨模型的压制脚手架在当前模型上过度压制。
+- **不先想的代价**：重生成/后处理只是**洗稿**（治标），且每轮**多烧一遍 token**；源头不改，下轮照样僵。
+- 你仍自行决断：若预设本就适配当前模型，可不动。
+
+### ③ 上下文 / Token 纪律
+- **建议**：分块、按需读（`get_recent_context` 的 n 取小；用 `apply_lorebook` 关键词扫描，别整文件倒进上下文）；长会话用 `seal_volume` 归档并清空。
+- **为何要先想**：AIRP 的数据（卡/预设/历史/世界书）可能很大；插件 blob/KV 也可能巨大。
+- **不先想的代价**：把整文件/全历史灌进上下文 → **token 预算瞬间烧光**。读取已有 256 KiB/100KB 上限兜底，但**调用方的读取策略**才是第一防线。
+- 你仍自行决断：短会话、小数据可直接全读。
+
+### ④ 世界书：关键词触发，不整本预载
+- **建议**：每轮用 `apply_lorebook(text)` 按关键词取相关条目；不要把整本 lorebook 塞进 system prompt。
+- **为何要先想**：世界书天生是**关键词门控**的背景库。
+- **不先想的代价**：双重损失——**token 浪费** + 角色**「知道太多」**（一次倒出全部设定）→ 破坏「逐步揭示」的沉浸感。
+- **适用范围**：④ 的懒加载指**单角色回合的增量 top-up**。**多角色场景**由 `build_scene_system_prompt` 在装配时**全量前载 union 合并世界书**（整个 ensemble 须共驻，剧情才靠角色互相反应推进）——**别用 ④ 去剥它**。
+- 你仍自行决断：世界书极小或剧情需要全量背景时可整载。
+
+> 另：导入**不可信第三方卡/预设**前，建议先 `validate_card` / `validate_preset`（详见 §15.5）——孤儿代码/破损宏会漏进 prompt 或被误删。情境性较强，故不列入每会话首要清单。
+
+> 原则：决策提示**抬高优先级与显著性**，但**不剥夺你的选择权**。约束来自「得失」，不来自「命令」。
+
+---
+
 ## 1. 核心概念
 
 ```
@@ -381,11 +418,20 @@ rollback_messages(character_id, session_id, n=3)
 | 预设 | `set_preset_regex_enabled` | preset_id, filename, enabled |
 | 拆解 | `decompose_character` | character_id, target_dir? |
 | 拆解 | `decompose_preset` | preset_id, target_dir? |
+| 导出 | `export_context_bundle` | character_id, preset_id?, include_lorebook?, out_dir? |
 | 闸门 | `get_gating_status` | character_id |
 | 场景 | `create_scene` | scene_id, characters, description?, ... |
 | 场景 | `list_scenes` | — |
 | 场景 | `get_scene` | scene_id |
 | 场景 | `add_character_to_scene` | scene_id, character_id, role?, intro? |
+| 场景 | `merge_lorebooks` | character_ids, strategy? (union/primary_only) |
+| 场景 | `build_scene_system_prompt` | scene_id, user_name?, preset_id?, style_enhance? |
+| 插件 | `plugin_kv_get` | plugin_name, key |
+| 插件 | `plugin_kv_set` | plugin_name, key, value_json |
+| 插件 | `plugin_jsonl_append` | plugin_name, file, line_json |
+| 插件 | `plugin_jsonl_read` | plugin_name, file, offset?, limit? |
+| 插件 | `plugin_blob_write` | plugin_name, rel_path, content_base64? / content_text? |
+| 插件 | `plugin_blob_read` | plugin_name, rel_path, as_text? |
 
 ### 可用的 MCP 资源速查表
 
@@ -407,6 +453,9 @@ rollback_messages(character_id, session_id, n=3)
 | `airp://scenes` | 场景列表 |
 | `airp://scenes/{id}` | 场景配置 |
 | `airp://gating/{id}/checkpoints` | 检查点进度 |
+| `airp://plugins` | 插件命名空间列表 |
+| `airp://plugins/{name}/files` | 插件文件相对路径列表（递归） |
+| `airp://plugins/{name}/data/{path}` | 插件文件内容（UTF-8；二进制用 plugin_blob_read） |
 
 ### 可用的 MCP 提示词速查表
 
@@ -420,7 +469,10 @@ rollback_messages(character_id, session_id, n=3)
 | `prompt_build_session_context` | character_id, session_id, decomposed_dir | 会话上下文构建 |
 | `seal_volume` | character_id, session_id | 卷封存指南 |
 | `analyze_preset` | preset_id | 预设分析工作流 |
+| `tune_preset` | preset_id, feedback? | 按用户反馈热调预设文风（改源头，best-effort 不保证） |
 | `build_scene` | scene_id | 多角色场景装配指南 |
+| `validate_card` | character_id | 角色卡内容验证（未知宏/孤儿代码/破损 markup） |
+| `validate_preset` | preset_id | 预设验证（破损正则/未知 identifier/参数异常） |
 
 ---
 
@@ -518,7 +570,7 @@ rollback_messages(character_id, session_id, n=3)
 ✅ 值得并行：
   - 3+ 个独立资源读取 —— 总延迟 = max(各调用延迟)，而非 sum
   - 多角色场景的数据加载 —— 典型场景约 2-4x 加速
-  - 含大文件读取（如 preset raw 455KB）—— 隐藏慢 IO
+  - 含大文件读取（如 preset raw，上限 100KB 截断）—— 隐藏慢 IO
 ```
 
 ---
@@ -642,3 +694,37 @@ add_character_to_scene(scene_id, character_id, role, intro) → 添加角色
   start_session("凌欺霜", preset_id="LENI")
   → 文风、参数、正则过滤全部就位
 ```
+
+---
+
+## 16. 执行隔离 — 用 subagent 写 RP（强烈建议）
+
+> 主 Agent（编排 Claude Code 的那个）上下文里塞满编程身份、几十个工具 schema、
+> harness 提醒。它**直接写 RP**，文笔会被编程腔压扁 —— 即使预设文风已成功注入，
+> 输出仍显「僵硬/出戏」。这是文笔质量问题，不是指令遵循问题。
+
+### 推荐模式
+```
+1. 主 Agent 只做编排（读数据、装配上下文）
+2. export_context_bundle(character_id, preset_id?) → 产出成品上下文包：
+     {out_dir}/{character_id}/
+       ├── context.md        # 零占位、自包含的人设+文风+状态正文
+       ├── preset_raw.json   # 完整预设(含 prompts[])原样旁路，subagent 自行应用
+       └── extensions.json   # 角色卡未知捆绑内容原样旁路（如有）
+3. 拉一个 subagent（你的 Task 工具），把 context.md 作为它的全部系统上下文
+4. subagent 在干净上下文里写 RP —— 预设文风主导，无编程腔竞争
+5. 主 Agent 收回输出，按需 append_message 持久化
+```
+
+### 为什么有效
+subagent 上下文 ≈ 只有你给的人设 → 文风锚不被稀释。隔离比在主上下文里硬注入更有效。
+
+### 与 decompose 的区别
+- `decompose_*` = **分析模板**（含 `<!-- 填充 -->` 占位，需二次加工），给人/分析 agent 用
+- `export_context_bundle` = **成品**（零占位、落盘、自包含），直接喂 subagent
+
+### 边界 / 守则
+- AIRP 只装配**已知 RP 字段**进 context.md；**未知捆绑内容**（preset `prompts[]`、card `extensions`）原样旁路到 sidecar，**AIRP 不解析语义**，由 subagent 决定如何应用。
+- 输出**通用 Markdown**，不带任何客户端 skill 格式 —— 要 skill 化，由你在宿主侧封装。
+- **关于世界书——§0.5 ④ 的有意例外**：逐轮关键词触发（`apply_lorebook`）只在**主 Agent 运行时（有 MCP）**适用。subagent 拿到 bundle 后**身处隔离上下文、无 MCP**，中途无法触发，故 `include_lorebook=true` 时世界书**全量预载进 `context.md`**。多角色同场时尤其必须——整个 ensemble（各角色人设 + 跨角色世界书）必须共驻上下文，剧情才靠角色互相反应推进；懒加载会饿死跨角色推理。两个上下文、两套策略，不矛盾。
+- **非强制**：单模型客户端、轻量场景可跳过，直接在主上下文写。Agent 自行抉择。
