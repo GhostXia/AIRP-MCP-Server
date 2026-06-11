@@ -72,6 +72,13 @@
 - **适用范围**：④ 的懒加载指**单角色回合的增量 top-up**。**多角色场景**由 `build_scene_system_prompt` 在装配时**全量前载 union 合并世界书**（整个 ensemble 须共驻，剧情才靠角色互相反应推进）——**别用 ④ 去剥它**。
 - 你仍自行决断：世界书极小或剧情需要全量背景时可整载。
 
+### ⑤ 首轮注入「思考模式」指令（社区公认质量第一杠杆）
+- **建议**：RP 首轮注入一段**思考模式指令**，控制模型推理过程（`<think>`）的形态——**角色沉浸内心独白** 或 **纯分析**；只注一次，后续靠历史持续生效。
+- **为何要先想**：这比文风**更上游**。不注入，模型的思考过程不进入角色状态，正文再调也容易「翻译腔/出戏」。
+- **不先想的代价**：文笔从根上「死」——思考层没入戏，下游文风补不回来；还常出现「思考全英文/输入味」。
+- **怎么落**：内容是**你的数据**（模型相关，如 DeepSeek `<think>` 规则），AIRP 不代写不解析。喂 subagent 时用 `export_context_bundle` 的 `thinking_mode_text` 槽（原样置于 context.md 最前）；或存为 style 工件首轮发送。
+- 你仍自行决断：不带 `<think>` 的模型、或已稳定入戏可省。
+
 > 另：导入**不可信第三方卡/预设**前，建议先 `validate_card` / `validate_preset`（详见 §15.5）——孤儿代码/破损宏会漏进 prompt 或被误删。情境性较强，故不列入每会话首要清单。
 
 > 原则：决策提示**抬高优先级与显著性**，但**不剥夺你的选择权**。约束来自「得失」，不来自「命令」。
@@ -418,7 +425,7 @@ rollback_messages(character_id, session_id, n=3)
 | 预设 | `set_preset_regex_enabled` | preset_id, filename, enabled |
 | 拆解 | `decompose_character` | character_id, target_dir? |
 | 拆解 | `decompose_preset` | preset_id, target_dir? |
-| 导出 | `export_context_bundle` | character_id, preset_id?, include_lorebook?, out_dir? |
+| 导出 | `export_context_bundle` | character_id, preset_id?, include_lorebook?, thinking_mode_text?, out_dir? |
 | 闸门 | `get_gating_status` | character_id |
 | 场景 | `create_scene` | scene_id, characters, description?, ... |
 | 场景 | `list_scenes` | — |
@@ -706,9 +713,9 @@ add_character_to_scene(scene_id, character_id, role, intro) → 添加角色
 ### 推荐模式
 ```
 1. 主 Agent 只做编排（读数据、装配上下文）
-2. export_context_bundle(character_id, preset_id?) → 产出成品上下文包：
+2. export_context_bundle(character_id, preset_id?, thinking_mode_text?) → 产出成品上下文包：
      {out_dir}/{character_id}/
-       ├── context.md        # 零占位、自包含的人设+文风+状态正文
+       ├── context.md        # 零占位、自包含；thinking_mode_text（如传）置于最前 + 人设+文风+状态正文
        ├── preset_raw.json   # 完整预设(含 prompts[])原样旁路，subagent 自行应用
        └── extensions.json   # 角色卡未知捆绑内容原样旁路（如有）
 3. 拉一个 subagent（你的 Task 工具），把 context.md 作为它的全部系统上下文

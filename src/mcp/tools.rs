@@ -1092,6 +1092,12 @@ impl AirpMcpServer {
         let preset_id = args["preset_id"].as_str();
         let out_dir = args["out_dir"].as_str().unwrap_or("./exports");
         let include_lorebook = args["include_lorebook"].as_bool().unwrap_or(false);
+        // Optional thinking-mode directive (e.g. the "chen-guide" trick: control
+        // the model's reasoning shape — immersive in-character monologue vs pure
+        // analysis). The community treats this as the #1 RP-quality lever, set
+        // first-turn. Verbatim passthrough — model-specific content stays the
+        // caller's data; AIRP does not author or interpret it.
+        let thinking_mode_text = args["thinking_mode_text"].as_str();
 
         let id = CharacterId::new(character_id)?;
         let char_store = CharacterStore::new(&self.storage);
@@ -1134,13 +1140,23 @@ impl AirpMcpServer {
             }
         }
 
+        // Thinking-mode block sits FIRST in the actual context (highest salience,
+        // shapes the model's reasoning before the persona). Verbatim, uninterpreted.
+        let thinking_block = match thinking_mode_text {
+            Some(t) if !t.trim().is_empty() => format!(
+                "## Thinking mode (keep active every turn — verbatim directive, AIRP does not interpret)\n{}\n\n---\n\n",
+                t.trim()
+            ),
+            _ => String::new(),
+        };
+
         let mut context_md = format!(
             "# RP Context Bundle: {}\n\n\
             > Feed this to an ISOLATED subagent as its system context. A fresh \
             subagent context lets this persona dominate, instead of competing with \
             the orchestrator's coding register. Generic Markdown — no host-specific \
-            skill format; wrap it in your host's skill shape if needed.\n\n---\n\n{}\n",
-            character.card.name, prose
+            skill format; wrap it in your host's skill shape if needed.\n\n---\n\n{}{}\n",
+            character.card.name, thinking_block, prose
         );
 
         // Write bundle dir + sidecars (raw passthrough, never interpreted)
