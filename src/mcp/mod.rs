@@ -106,7 +106,16 @@ impl ServerHandler for AirpMcpServer {
             SOURCE preset, not regeneration or output post-processing. Why: the \
             style already transferred; the problem is preset content. Cost if \
             skipped: you only launder the output (treats the symptom) and waste \
-            tokens.\n\n\
+            tokens.\n\
+            3. Bulk reads / long sessions -> prefer scoped, paged reads (small \
+            get_recent_context n; keyword apply_lorebook over full dumps) and \
+            seal_volume to archive+clear long sessions. Why: AIRP data can be \
+            large. Cost if skipped: you blow the token budget by pulling whole \
+            files/histories into context.\n\
+            4. World knowledge -> trigger lorebook by keyword (apply_lorebook); \
+            don't preload the whole book. Why: entries are keyword-gated by \
+            design. Cost if skipped: wasted tokens AND the character 'knows' \
+            things it shouldn't, breaking immersion.\n\n\
             Use list_tools to see available operations.".to_string(),
         );
         info
