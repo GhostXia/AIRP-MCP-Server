@@ -15,7 +15,15 @@ impl AirpMcpServer {
             .ok_or_else(|| crate::error::AirpError::Validation("Missing png_base64".to_string()))?;
         
         let png_data = base64_decode(png_base64)?;
-        
+
+        // Cap decoded input before handing it to the PNG parser — bounds memory
+        // and limits decompression-bomb surface (zTXt/IDAT zlib expansion).
+        const MAX_PNG_BYTES: usize = 10 * 1024 * 1024;
+        if png_data.len() > MAX_PNG_BYTES {
+            return Err(crate::error::AirpError::Validation(format!(
+                "PNG too large: {} bytes exceeds {} byte cap", png_data.len(), MAX_PNG_BYTES)));
+        }
+
         let store = CharacterStore::new(&self.storage);
         let character = store.import_from_png(&png_data).await?;
         

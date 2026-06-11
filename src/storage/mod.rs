@@ -188,18 +188,6 @@ impl Storage {
         Ok(())
     }
 
-    pub fn safe_resolve(&self, path: &str) -> Result<PathBuf> {
-        let resolved = self.data_root.join(path);
-        let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
-        let root_canonical = self.data_root.canonicalize().unwrap_or_else(|_| self.data_root.clone());
-
-        if !canonical.starts_with(&root_canonical) {
-            return Err(AirpError::Validation(format!("Path traversal attempt: {:?}", path)));
-        }
-
-        Ok(canonical)
-    }
-
     pub fn safe_resolve_for_write(&self, base_dir: &Path, user_path: &str) -> Result<PathBuf> {
         let trimmed = user_path.trim();
         if trimmed.is_empty() {
@@ -238,6 +226,18 @@ impl Storage {
         let resolved = stack.iter().fold(canon_base.clone(), |acc, c| acc.join(c));
         if !resolved.starts_with(&canon_base) {
             return Err(AirpError::Validation(format!("path escape attempt: {}", user_path)));
+        }
+
+        // Defense-in-depth: refuse to resolve onto an existing symlink. The
+        // lexical check above keeps the path within base, but a symlink target
+        // can point elsewhere — blocking it stops symlink-swap escapes on every
+        // read/write that routes through here. (Local single-user model; parent-
+        // dir symlinks are out of scope — don't expose the HTTP transport.)
+        if let Ok(meta) = std::fs::symlink_metadata(&resolved) {
+            if meta.file_type().is_symlink() {
+                return Err(AirpError::Validation(format!(
+                    "refusing to resolve through a symlink: {}", user_path)));
+            }
         }
 
         Ok(resolved)

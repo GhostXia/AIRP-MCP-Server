@@ -232,6 +232,16 @@ cargo fmt
 - **CI**：GitHub Actions 在每次 push / PR 跑 `cargo build` + `cargo test --test plugin_data_test`（见徽章）。
 - 全量 `cargo test` 暂缓：`tests/integration_test.rs` 在 main 上预存损坏（`crate::` 路径 + PNG zTXt/base64 测试辅助），属独立 follow-up。
 
+## 安全与部署
+
+AIRP 的威胁模型假设 **本地、单用户、stdio / loopback** 运行。基于此：
+
+- **路径安全**：所有插件/预设的读写经**组件式**校验 —— 拒 `..` 逃逸、拒绝对路径、拒符号链接，结果锁在 `data/` 根内（`Storage::safe_resolve_for_write`）。
+- **输入限制**：`import_card` 的 PNG ≤ 10 MiB，PNG 解码器设分配上限（挡 zlib 压缩炸弹）；工具单次读 ≤ 256 KiB；预设 raw / JSONL 超限截断或分页。
+- **插件信任模型**：`data/plugins/` 是**零 schema、开放接入**（戒律 4）—— AIRP 不解析、不校验、不沙箱化插件数据语义。插件写入被限制在自己的 `plugins/{name}/` 命名空间内，**但内容本身不受信任**。⚠️ **只安装可信来源的插件。**
+- **⚠️ 不要把 HTTP 传输暴露到公网**：`serve --bind` 仅供本机/可信内网。路径与插件的边界假设调用方是本地单用户；绑定到 `0.0.0.0` 并公开 = 把这些写入接口交给远程，威胁模型不再成立。
+- **备份**：数据是本地文件，建议定期备份 `data/` 目录。
+
 ## 隐私
 
 AIRP MCP Server 是 **本地优先** 的二进制工具：
