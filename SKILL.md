@@ -424,6 +424,14 @@ rollback_messages(character_id, session_id, n=3)
 | 场景 | `list_scenes` | — |
 | 场景 | `get_scene` | scene_id |
 | 场景 | `add_character_to_scene` | scene_id, character_id, role?, intro? |
+| 场景 | `merge_lorebooks` | character_ids, strategy? (union/primary_only) |
+| 场景 | `build_scene_system_prompt` | scene_id, user_name?, preset_id?, style_enhance? |
+| 插件 | `plugin_kv_get` | plugin_name, key |
+| 插件 | `plugin_kv_set` | plugin_name, key, value_json |
+| 插件 | `plugin_jsonl_append` | plugin_name, file, line_json |
+| 插件 | `plugin_jsonl_read` | plugin_name, file, offset?, limit? |
+| 插件 | `plugin_blob_write` | plugin_name, rel_path, content_base64? / content_text? |
+| 插件 | `plugin_blob_read` | plugin_name, rel_path, as_text? |
 
 ### 可用的 MCP 资源速查表
 
@@ -445,6 +453,9 @@ rollback_messages(character_id, session_id, n=3)
 | `airp://scenes` | 场景列表 |
 | `airp://scenes/{id}` | 场景配置 |
 | `airp://gating/{id}/checkpoints` | 检查点进度 |
+| `airp://plugins` | 插件命名空间列表 |
+| `airp://plugins/{name}/files` | 插件文件相对路径列表（递归） |
+| `airp://plugins/{name}/data/{path}` | 插件文件内容（UTF-8；二进制用 plugin_blob_read） |
 
 ### 可用的 MCP 提示词速查表
 
@@ -559,7 +570,7 @@ rollback_messages(character_id, session_id, n=3)
 ✅ 值得并行：
   - 3+ 个独立资源读取 —— 总延迟 = max(各调用延迟)，而非 sum
   - 多角色场景的数据加载 —— 典型场景约 2-4x 加速
-  - 含大文件读取（如 preset raw 455KB）—— 隐藏慢 IO
+  - 含大文件读取（如 preset raw，上限 100KB 截断）—— 隐藏慢 IO
 ```
 
 ---
