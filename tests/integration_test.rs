@@ -1,7 +1,5 @@
 //! Integration tests for AIRP MCP Server
 
-use std::sync::Arc;
-use tempfile::TempDir;
 use serde_json::Value;
 
 mod common;
