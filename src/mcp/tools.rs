@@ -11,18 +11,49 @@ impl AirpMcpServer {
     // Character tools
     
     pub async fn handle_import_card(&self, args: Value) -> Result<String> {
-        let png_base64 = args["png_base64"].as_str()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing png_base64".to_string()))?;
-        
-        let png_data = base64_decode(png_base64)?;
-
-        // Cap decoded input before handing it to the PNG parser — bounds memory
-        // and limits decompression-bomb surface (zTXt/IDAT zlib expansion).
+        // Bounds memory + limits decompression-bomb surface (zTXt/IDAT zlib).
         const MAX_PNG_BYTES: usize = 10 * 1024 * 1024;
-        if png_data.len() > MAX_PNG_BYTES {
-            return Err(crate::error::AirpError::Validation(format!(
-                "PNG too large: {} bytes exceeds {} byte cap", png_data.len(), MAX_PNG_BYTES)));
-        }
+        let png_base64 = args["png_base64"].as_str();
+        let png_path = args["png_path"].as_str();
+
+        let png_data = match (png_base64, png_path) {
+            (Some(b64), None) => {
+                let data = base64_decode(b64)?;
+                if data.len() > MAX_PNG_BYTES {
+                    return Err(crate::error::AirpError::Validation(format!(
+                        "PNG too large: {} bytes exceeds {} byte cap", data.len(), MAX_PNG_BYTES)));
+                }
+                data
+            }
+            (None, Some(path)) => {
+                // Server-side read: the PNG bytes / base64 never enter the model
+                // context, avoiding the base64 token-burn (a 10 MiB card = ~13 MiB
+                // of base64 text if the agent encodes it). Size-check via metadata
+                // BEFORE reading, so a bomb file is rejected without loading it.
+                let meta = tokio::fs::metadata(path).await.map_err(|e| {
+                    crate::error::AirpError::Validation(format!("cannot stat png_path {}: {}", path, e))
+                })?;
+                if !meta.is_file() {
+                    return Err(crate::error::AirpError::Validation(format!(
+                        "png_path is not a file: {}", path)));
+                }
+                if meta.len() > MAX_PNG_BYTES as u64 {
+                    return Err(crate::error::AirpError::Validation(format!(
+                        "PNG too large: {} bytes exceeds {} byte cap", meta.len(), MAX_PNG_BYTES)));
+                }
+                tokio::fs::read(path).await.map_err(|e| {
+                    crate::error::AirpError::Validation(format!("cannot read png_path {}: {}", path, e))
+                })?
+            }
+            (Some(_), Some(_)) => {
+                return Err(crate::error::AirpError::Validation(
+                    "provide exactly one of png_base64 / png_path".to_string()));
+            }
+            (None, None) => {
+                return Err(crate::error::AirpError::Validation(
+                    "missing png_base64 or png_path".to_string()));
+            }
+        };
 
         let store = CharacterStore::new(&self.storage);
         let character = store.import_from_png(&png_data).await?;
