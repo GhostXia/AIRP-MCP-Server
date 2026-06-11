@@ -58,6 +58,7 @@ pub fn card_to_base64(card: &serde_json::Value) -> String {
 }
 
 fn build_minimal_png(chara_json: &str) -> Vec<u8> {
+    use base64::Engine;
     use std::io::Write;
 
     let mut data = Vec::new();
@@ -69,8 +70,11 @@ fn build_minimal_png(chara_json: &str) -> Vec<u8> {
     let ihdr_data = create_ihdr(1, 1);
     write_chunk(&mut data, b"IHDR", &ihdr_data);
 
-    // chara chunk (compressed latin1 text)
-    let chara_data = create_ztext(b"chara", chara_json.as_bytes());
+    // chara chunk: SillyTavern V2 stores base64(JSON) in the chunk text, then
+    // zTXt-compresses it. The importer zlib-decompresses, then base64-decodes —
+    // so the chunk must carry base64(JSON), not raw JSON.
+    let chara_b64 = base64::engine::general_purpose::STANDARD.encode(chara_json.as_bytes());
+    let chara_data = create_ztext(b"chara", chara_b64.as_bytes());
     write_chunk(&mut data, b"zTXt", &chara_data);
 
     // IDAT chunk (minimal image data)

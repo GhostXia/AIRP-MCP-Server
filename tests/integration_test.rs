@@ -290,9 +290,9 @@ async fn test_preset_operations() {
     assert!(result.contains("No presets"));
 
     // Create a preset manually via storage
-    let preset_store = crate::storage::PresetStore::new(&ctx.storage);
-    let preset = crate::models::Preset {
-        id: crate::models::PresetId::new("test-preset").unwrap(),
+    let preset_store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let preset = airp_mcp_server::models::Preset {
+        id: airp_mcp_server::models::PresetId::new("test-preset").unwrap(),
         name: "Test Preset".to_string(),
         config: Default::default(),
     };
