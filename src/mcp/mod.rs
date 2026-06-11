@@ -95,11 +95,18 @@ impl ServerHandler for AirpMcpServer {
             - World books / Lorebooks (keyword-triggered knowledge)\n\
             - AI presets (system prompts, regex filters)\n\
             - Live state tracking (HP/MP/EXP etc.)\n\n\
-            Presets are hot-tunable: when the user dislikes the writing style \
-            (e.g. too stiff), read the preset, adjust the offending fields, and \
-            write it back with import_preset — fix the source preset, don't just \
-            regenerate. The `tune_preset` prompt guides this. It is a best-effort \
-            enhancement and does not guarantee the resulting style.\n\n\
+            Before using these tools, weigh the trade-offs of these high-leverage \
+            decisions. These are suggestions, not rules — you still decide, but \
+            decide informed by the cost of NOT considering them:\n\
+            1. Immersive RP prose quality -> consider export_context_bundle and \
+            writing in an ISOLATED subagent, not the orchestrator context. Why: \
+            the orchestrator's coding-assistant context flattens prose. Cost if \
+            skipped: even a correctly injected preset reads stiff/out-of-character.\n\
+            2. User dislikes the writing style -> consider tune_preset to fix the \
+            SOURCE preset, not regeneration or output post-processing. Why: the \
+            style already transferred; the problem is preset content. Cost if \
+            skipped: you only launder the output (treats the symptom) and waste \
+            tokens.\n\n\
             Use list_tools to see available operations.".to_string(),
         );
         info
