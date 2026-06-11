@@ -381,6 +381,7 @@ rollback_messages(character_id, session_id, n=3)
 | 预设 | `set_preset_regex_enabled` | preset_id, filename, enabled |
 | 拆解 | `decompose_character` | character_id, target_dir? |
 | 拆解 | `decompose_preset` | preset_id, target_dir? |
+| 导出 | `export_context_bundle` | character_id, preset_id?, include_lorebook?, out_dir? |
 | 闸门 | `get_gating_status` | character_id |
 | 场景 | `create_scene` | scene_id, characters, description?, ... |
 | 场景 | `list_scenes` | — |
@@ -420,7 +421,10 @@ rollback_messages(character_id, session_id, n=3)
 | `prompt_build_session_context` | character_id, session_id, decomposed_dir | 会话上下文构建 |
 | `seal_volume` | character_id, session_id | 卷封存指南 |
 | `analyze_preset` | preset_id | 预设分析工作流 |
+| `tune_preset` | preset_id, feedback? | 按用户反馈热调预设文风（改源头，best-effort 不保证） |
 | `build_scene` | scene_id | 多角色场景装配指南 |
+| `validate_card` | character_id | 角色卡内容验证（未知宏/孤儿代码/破损 markup） |
+| `validate_preset` | preset_id | 预设验证（破损正则/未知 identifier/参数异常） |
 
 ---
 
@@ -642,3 +646,36 @@ add_character_to_scene(scene_id, character_id, role, intro) → 添加角色
   start_session("凌欺霜", preset_id="LENI")
   → 文风、参数、正则过滤全部就位
 ```
+
+---
+
+## 16. 执行隔离 — 用 subagent 写 RP（强烈建议）
+
+> 主 Agent（编排 Claude Code 的那个）上下文里塞满编程身份、几十个工具 schema、
+> harness 提醒。它**直接写 RP**，文笔会被编程腔压扁 —— 即使预设文风已成功注入，
+> 输出仍显「僵硬/出戏」。这是文笔质量问题，不是指令遵循问题。
+
+### 推荐模式
+```
+1. 主 Agent 只做编排（读数据、装配上下文）
+2. export_context_bundle(character_id, preset_id?) → 产出成品上下文包：
+     {out_dir}/{character_id}/
+       ├── context.md        # 零占位、自包含的人设+文风+状态正文
+       ├── preset_raw.json   # 完整预设(含 prompts[])原样旁路，subagent 自行应用
+       └── extensions.json   # 角色卡未知捆绑内容原样旁路（如有）
+3. 拉一个 subagent（你的 Task 工具），把 context.md 作为它的全部系统上下文
+4. subagent 在干净上下文里写 RP —— 预设文风主导，无编程腔竞争
+5. 主 Agent 收回输出，按需 append_message 持久化
+```
+
+### 为什么有效
+subagent 上下文 ≈ 只有你给的人设 → 文风锚不被稀释。隔离比在主上下文里硬注入更有效。
+
+### 与 decompose 的区别
+- `decompose_*` = **分析模板**（含 `<!-- 填充 -->` 占位，需二次加工），给人/分析 agent 用
+- `export_context_bundle` = **成品**（零占位、落盘、自包含），直接喂 subagent
+
+### 边界 / 守则
+- AIRP 只装配**已知 RP 字段**进 context.md；**未知捆绑内容**（preset `prompts[]`、card `extensions`）原样旁路到 sidecar，**AIRP 不解析语义**，由 subagent 决定如何应用。
+- 输出**通用 Markdown**，不带任何客户端 skill 格式 —— 要 skill 化，由你在宿主侧封装。
+- **非强制**：单模型客户端、轻量场景可跳过，直接在主上下文写。Agent 自行抉择。

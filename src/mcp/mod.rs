@@ -145,6 +145,7 @@ impl ServerHandler for AirpMcpServer {
                 add_character_to_scene_tool(),
                 merge_lorebooks_tool(),
                 build_scene_system_prompt_tool(),
+                export_context_bundle_tool(),
                 plugin_kv_get_tool(),
                 plugin_kv_set_tool(),
                 plugin_jsonl_append_tool(),
@@ -197,6 +198,7 @@ impl ServerHandler for AirpMcpServer {
             "add_character_to_scene" => self.handle_add_character_to_scene(args).await,
             "merge_lorebooks" => self.handle_merge_lorebooks(args).await,
             "build_scene_system_prompt" => self.handle_build_scene_system_prompt(args).await,
+            "export_context_bundle" => self.handle_export_context_bundle(args).await,
             "plugin_kv_get" => self.handle_plugin_kv_get(args).await,
             "plugin_kv_set" => self.handle_plugin_kv_set(args).await,
             "plugin_jsonl_append" => self.handle_plugin_jsonl_append(args).await,
@@ -803,6 +805,23 @@ fn build_scene_system_prompt_tool() -> Tool {
                 "style_enhance": { "type": "boolean", "description": "Opt-in style enhancement (default false): inject per-character dialogue examples + preset suffix as voice anchors. Enhancement only — grows the prompt and may improve style fidelity, but does NOT guarantee the final output style.", "default": false }
             },
             "required": ["scene_id"]
+        })),
+    )
+}
+
+fn export_context_bundle_tool() -> Tool {
+    Tool::new(
+        "export_context_bundle",
+        "Export a self-contained, placeholder-free RP context bundle (Markdown + raw sidecars) for handoff to an ISOLATED subagent. Unlike decompose_* (analysis scaffold with TODO placeholders), this is finished and ready to feed as a subagent's system context. Known fields assembled into context.md; raw preset prompts[] and card.extensions passed through verbatim to sidecars (not interpreted). Generic Markdown — no host-specific skill format.",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "character_id": { "type": "string", "description": "Character ID to export" },
+                "preset_id": { "type": "string", "description": "Optional preset; prefix/suffix assembled into prose, full preset → preset_raw.json sidecar" },
+                "include_lorebook": { "type": "boolean", "description": "Append all enabled lorebook entries into context.md (default false; grows the bundle)", "default": false },
+                "out_dir": { "type": "string", "description": "Output base dir; bundle written to {out_dir}/{character_id}/ (default ./exports)", "default": "./exports" }
+            },
+            "required": ["character_id"]
         })),
     )
 }

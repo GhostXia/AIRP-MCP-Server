@@ -1076,6 +1076,117 @@ impl AirpMcpServer {
         Ok(prompt)
     }
 
+    // ── M_EXPORT: self-contained context bundle for subagent handoff ──────
+    // Deterministic assembly (no LLM). Distinct from decompose_* (analysis
+    // scaffold with TODO placeholders) and build_system_prompt (ephemeral
+    // inline). Produces a persisted, placeholder-free, generic-Markdown bundle
+    // meant to be fed to an ISOLATED subagent — where the RP persona dominates
+    // a clean context instead of competing with the orchestrator's coding
+    // register. Known RP fields are assembled into context.md; unknown bundled
+    // content (raw preset prompts[], card.extensions) is passed through verbatim
+    // to sidecars — AIRP never interprets it; the subagent applies it.
+
+    pub async fn handle_export_context_bundle(&self, args: serde_json::Value) -> Result<String> {
+        let character_id = args["character_id"].as_str()
+            .ok_or_else(|| AirpError::Validation("Missing character_id".to_string()))?;
+        let preset_id = args["preset_id"].as_str();
+        let out_dir = args["out_dir"].as_str().unwrap_or("./exports");
+        let include_lorebook = args["include_lorebook"].as_bool().unwrap_or(false);
+
+        let id = CharacterId::new(character_id)?;
+        let char_store = CharacterStore::new(&self.storage);
+        let character = char_store.get(&id).await?;
+
+        // 1. Assembled clean prose (known fields; mes_example is included by
+        //    card.build_system_prompt). Preset adds prefix/suffix only — its
+        //    full prompts[] body goes to the sidecar, not interpreted here.
+        let char_prompt = character.card.build_system_prompt();
+        let mut prose = if let Some(pid) = preset_id {
+            let preset_store = PresetStore::new(&self.storage);
+            let preset = preset_store.get(&PresetId::new(pid)?).await?;
+            preset.build_system_prompt(&char_prompt)
+        } else {
+            char_prompt
+        };
+
+        // Live state
+        let state = char_store.get_live_state(&id).await?;
+        if !state.values.is_empty() {
+            prose.push_str("\n\n## Current State\n");
+            prose.push_str(&state.format_for_prompt(None));
+        }
+
+        // Optional lorebook (all enabled entries, ordered by insertion_order)
+        if include_lorebook {
+            let lorebook = char_store.get_lorebook(&id).await?;
+            let mut enabled: Vec<&LorebookEntry> =
+                lorebook.entries.iter().filter(|e| e.enabled).collect();
+            enabled.sort_by_key(|e| std::cmp::Reverse(e.insertion_order));
+            if !enabled.is_empty() {
+                prose.push_str("\n\n## World Knowledge (lorebook)\n");
+                for e in enabled {
+                    prose.push_str(&format!(
+                        "\n### {}\n{}\n",
+                        e.name.as_deref().unwrap_or(&e.id),
+                        e.content
+                    ));
+                }
+            }
+        }
+
+        let mut context_md = format!(
+            "# RP Context Bundle: {}\n\n\
+            > Feed this to an ISOLATED subagent as its system context. A fresh \
+            subagent context lets this persona dominate, instead of competing with \
+            the orchestrator's coding register. Generic Markdown — no host-specific \
+            skill format; wrap it in your host's skill shape if needed.\n\n---\n\n{}\n",
+            character.card.name, prose
+        );
+
+        // Write bundle dir + sidecars (raw passthrough, never interpreted)
+        let dir = std::path::Path::new(out_dir).join(character_id);
+        tokio::fs::create_dir_all(&dir).await?;
+        let mut files: Vec<String> = Vec::new();
+
+        if let Some(pid) = preset_id {
+            let raw_path = self.storage.preset_json_path(pid);
+            if raw_path.exists() {
+                let raw = tokio::fs::read_to_string(&raw_path).await?;
+                tokio::fs::write(dir.join("preset_raw.json"), &raw).await?;
+                files.push("preset_raw.json".to_string());
+                context_md.push_str(
+                    "\n> Sidecar `preset_raw.json` — full preset incl. prompts[] \
+                    (AIRP does not interpret; apply it for max style fidelity).\n");
+            }
+        }
+
+        if let Some(ext) = &character.card.extensions {
+            let empty = ext.is_null()
+                || ext.as_object().map(|o| o.is_empty()).unwrap_or(false);
+            if !empty {
+                tokio::fs::write(
+                    dir.join("extensions.json"),
+                    serde_json::to_string_pretty(ext)?,
+                ).await?;
+                files.push("extensions.json".to_string());
+                context_md.push_str(
+                    "\n> Sidecar `extensions.json` — raw bundled card extensions \
+                    (character_book / depth_prompt / third-party), unparsed passthrough.\n");
+            }
+        }
+
+        tokio::fs::write(dir.join("context.md"), &context_md).await?;
+        files.insert(0, "context.md".to_string());
+
+        Ok(serde_json::json!({
+            "character_id": character_id,
+            "out_dir": dir.display().to_string(),
+            "files": files,
+            "context_bytes": context_md.len(),
+            "note": "Self-contained context.md for subagent handoff; sidecars are raw passthrough (uninterpreted).",
+        }).to_string())
+    }
+
     // ── M_PR Preset tools ────────────────────────────────────────────────
 
     pub async fn handle_import_preset(&self, args: serde_json::Value) -> Result<String> {
