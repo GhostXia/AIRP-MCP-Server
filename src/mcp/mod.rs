@@ -835,6 +835,7 @@ fn export_context_bundle_tool() -> Tool {
                 "character_id": { "type": "string", "description": "Character ID to export" },
                 "preset_id": { "type": "string", "description": "Optional preset; prefix/suffix assembled into prose, full preset → preset_raw.json sidecar" },
                 "include_lorebook": { "type": "boolean", "description": "Append all enabled lorebook entries into context.md (default false; grows the bundle)", "default": false },
+                "thinking_mode_text": { "type": "string", "description": "Optional verbatim thinking-mode directive placed first in context.md (e.g. control reasoning shape: immersive in-character monologue vs pure analysis). Passthrough — caller-supplied, model-specific content; AIRP does not author or interpret it." },
                 "out_dir": { "type": "string", "description": "Output base dir; bundle written to {out_dir}/{character_id}/ (default ./exports)", "default": "./exports" }
             },
             "required": ["character_id"]
