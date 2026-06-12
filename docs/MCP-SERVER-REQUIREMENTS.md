@@ -1,10 +1,19 @@
 # AIRP-MCP-Server — 对外接口需求：HTTP Streamable Transport
 
 > **来源**：AIRP-Gateway — https://github.com/GhostXia/AIRP-Gateway
-> **收录**：2026-06-12 · **状态**：OPEN（stdio 已可用；HTTP `/mcp/v1` 待实现）
+> **收录**：2026-06-12 · **状态**：按需（非阻塞，见下）
 > **链路**：`前端 → AIRP-Gateway → AIRP-MCP-Server → Agent`
 
 本文记录 AIRP-Gateway 对本服务 HTTP 传输的对接需求，供追踪完成情况。需求正文逐字收录于下方，未改写。
+
+## ⚠️ 优先级：HTTP 是「按需」，不是硬阻塞
+
+审计了 AIRP-Gateway（其 `docs/DESIGN.md` 的 ADR/看板/R6 实测）后的结论：
+
+- **stdio 路径现在就能对接，MCP-Server 零改动。** Gateway 拉起 `airp-mcp mcp --data-dir` 子进程、行分隔 JSON-RPC，对接本服务的真实 MCP。前端↔后端跑通**不需要本服务做任何改动**——瓶颈在 Gateway 自己的端到端验证（其 Stage 1），是 Gateway 侧的活。
+- **下方 R1–R8（补完 HTTP `/mcp/v1`）只在一种拓扑下才需要**：把 MCP-Server 当作**独立远程 HTTP 服务**（分布式 / 非子进程 / 多网关共享）。本地「Gateway 拉子进程」拓扑**用不到 HTTP**。
+- 因此：**先别为此改 stdio 或急着补 HTTP。** 确认要「远程 HTTP 部署」时再实施 R1–R8；推荐路径（rmcp `transport-streamable-http-server` feature）已审好。
+- **不要**让 MCP-Server 自己长出 REST/限流/前端鉴权——边缘关切属于 Gateway 层，本服务保持纯 MCP 数据层。
 
 ## 代码核实（截至 `main` @ 25581a9）
 
