@@ -18,7 +18,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use rmcp::handler::server::router::Router as McpRouter;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -72,10 +71,14 @@ pub async fn run_http_server(bind: &str, data_dir: &str) -> Result<()> {
 /// CORS) and an open `/health`. Extracted so tests can drive it in-process via
 /// `tower::ServiceExt::oneshot` without binding a socket.
 pub(crate) fn build_router(server: AirpMcpServer, auth_token: Option<String>) -> AxumRouter {
-    // The factory builds a fresh MCP router per session; all sessions share the
-    // same Storage (AirpMcpServer is Clone over Arc), so data stays consistent.
+    // Serve the handler directly (rmcp blanket-impls Service for ServerHandler,
+    // dispatching tools/list etc. to our hand-written methods). Do NOT wrap it
+    // in rmcp's router::Router: that router answers tools/list from its own
+    // route table — empty here, since our tools aren't macro-registered — and
+    // never delegates, so every tool would vanish over this transport. All
+    // sessions share the same Storage (AirpMcpServer is Clone over Arc).
     let mcp_service = StreamableHttpService::new(
-        move || Ok(McpRouter::new(server.clone())),
+        move || Ok(server.clone()),
         Arc::new(LocalSessionManager::default()),
         // Allow non-loopback Host headers: LAN deployment (PC backend + phone on
         // the same wifi) is a supported use. Bearer token + "trust your LAN" is
