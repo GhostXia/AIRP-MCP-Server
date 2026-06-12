@@ -236,9 +236,13 @@ mod tests {
             .await
             .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
+        // rmcp opens the SSE stream with an empty keep-alive frame ("data:\n
+        // id: 0\nretry: 3000") before the real message, so take the first
+        // non-empty `data:` payload, not just the first one.
         let payload = text
             .lines()
-            .find_map(|l| l.strip_prefix("data:").map(str::trim))
+            .filter_map(|l| l.strip_prefix("data:").map(str::trim))
+            .find(|p| !p.is_empty())
             .unwrap_or_else(|| text.trim());
         serde_json::from_str(payload)
             .unwrap_or_else(|e| panic!("response body is not JSON-RPC ({e}): {text}"))
