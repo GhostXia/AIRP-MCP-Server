@@ -10,9 +10,13 @@ pub struct Character {
     pub card: CharacterCard,
 }
 
-/// Character card data (PNG chara chunk format)
+/// Character card data (PNG chara chunk format).
+///
+/// SillyTavern V2 cards use snake_case keys (first_mes, mes_example,
+/// character_version), so the field names are used as-is — NO rename_all.
+/// (A previous `rename_all = "camelCase"` made real-card and test import fail
+/// with "missing field firstMes".)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct CharacterCard {
     pub name: String,
     pub description: String,

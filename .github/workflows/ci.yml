@@ -9,12 +9,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Build the lib + bin (confirms export_context_bundle and the whole
-      # crate compile). cargo build does not build test targets.
+      # Build the lib + bin (confirms the whole crate compiles).
       - name: cargo build
         run: cargo build --verbose
-      # Run only the known-green independent test target. The full suite is
-      # deferred: tests/integration_test.rs is pre-existing-broken on main
-      # (crate:: paths + a PNG zTXt/base64 helper bug) — a separate follow-up.
-      - name: cargo test (plugin_data_test)
-        run: cargo test --test plugin_data_test --verbose
+      # Full test suite — integration_test.rs is now fixed (crate:: paths +
+      # the PNG zTXt/base64 helper), so all targets run.
+      - name: cargo test
+        run: cargo test --verbose

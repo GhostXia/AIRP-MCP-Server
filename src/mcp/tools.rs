@@ -194,8 +194,12 @@ impl AirpMcpServer {
         if sessions.is_empty() {
             return Ok(format!("No sessions for character: {}", character_id));
         }
-        
-        let json = serde_json::to_string_pretty(&sessions)?;
+
+        let enriched: Vec<serde_json::Value> = sessions
+            .iter()
+            .map(|(sid, meta)| serde_json::json!({ "session_id": sid, "meta": meta }))
+            .collect();
+        let json = serde_json::to_string_pretty(&enriched)?;
         Ok(json)
     }
     

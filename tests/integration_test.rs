@@ -1,7 +1,5 @@
 //! Integration tests for AIRP MCP Server
 
-use std::sync::Arc;
-use tempfile::TempDir;
 use serde_json::Value;
 
 mod common;
@@ -273,8 +271,11 @@ async fn test_decompose_character() {
     });
     let result = server.handle_decompose_character(decompose_args).await.unwrap();
     assert!(result.contains("decomposed successfully"));
-    assert!(result.contains("basic_info.md"));
-    assert!(result.contains("personality.md"));
+    // The summary reports a file count; the named files land on disk under
+    // {target_dir}/characters/{id}/.
+    let base = std::path::Path::new("./test_decomposed/characters/testcharacter");
+    assert!(base.join("basic_info.md").exists());
+    assert!(base.join("personality.md").exists());
 
     // Cleanup
     let _ = std::fs::remove_dir_all("./test_decomposed");
@@ -290,9 +291,9 @@ async fn test_preset_operations() {
     assert!(result.contains("No presets"));
 
     // Create a preset manually via storage
-    let preset_store = crate::storage::PresetStore::new(&ctx.storage);
-    let preset = crate::models::Preset {
-        id: crate::models::PresetId::new("test-preset").unwrap(),
+    let preset_store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let preset = airp_mcp_server::models::Preset {
+        id: airp_mcp_server::models::PresetId::new("test-preset").unwrap(),
         name: "Test Preset".to_string(),
         config: Default::default(),
     };
