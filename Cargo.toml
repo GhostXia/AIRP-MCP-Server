@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 # MCP Protocol
-rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "transport-streamable-http-server"] }
 
 # Async runtime
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "io-util", "signal", "process"] }
