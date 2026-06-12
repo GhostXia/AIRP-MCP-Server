@@ -1,7 +1,7 @@
 # AIRP-MCP-Server — 对外接口需求：HTTP Streamable Transport
 
 > **来源**：AIRP-Gateway — https://github.com/GhostXia/AIRP-Gateway
-> **收录**：2026-06-12 · **状态**：按需（非阻塞，见下）
+> **收录**：2026-06-12 · **状态**：✅ 已实现（编译/CI 绿；活体 HTTP 握手待 Gateway 实测）
 > **链路**：`前端 → AIRP-Gateway → AIRP-MCP-Server → Agent`
 
 本文记录 AIRP-Gateway 对本服务 HTTP 传输的对接需求，供追踪完成情况。需求正文逐字收录于下方，未改写。
@@ -27,16 +27,21 @@ Gateway 所述桩状态**属实**：
 
 | 项 | 内容 | 状态 |
 |:--|:--|:--|
-| R1 | `POST /mcp/v1` 真实派发 rmcp，返回真实 `result`/`error` | ☐ 待做 |
-| R2 | 生命周期 `initialize` → `notifications/initialized` → `tools/list`/`tools/call`/`resources/read` | ☐ 待做 |
-| R3 | 会话 `Mcp-Session-Id`（响应头 + 校验 + SSE 按会话隔离） | ☐ 待做 |
-| R4 | 校验 `MCP-Protocol-Version` 头 | ☐ 待做 |
-| R5 | 内容协商 `application/json` vs `text/event-stream` | ☐ 待做 |
-| R6 | 鉴权 `AIRP_HTTP_TOKEN` bearer + 常数时间校验，统一作用 `/mcp/v1` | ✅ 已有（bearer + 常数时间 + route_layer；待与新 router 整合） |
-| R7 | CORS 允许/暴露 `Authorization, Mcp-Session-Id, MCP-Protocol-Version` | ☐ 待做 |
-| R8 | 规范 JSON-RPC error code（协议不符 `-32602` 等） | ☐ 待做 |
+| R1 | `POST /mcp/v1` 真实派发 rmcp，返回真实 `result`/`error` | ✅ rmcp `StreamableHttpService` |
+| R2 | 生命周期 `initialize` → `notifications/initialized` → `tools/list`/`tools/call`/`resources/read` | ✅ rmcp |
+| R3 | 会话 `Mcp-Session-Id`（响应头 + 校验 + SSE 按会话隔离） | ✅ rmcp（`LocalSessionManager`，`stateful_mode`） |
+| R4 | 校验 `MCP-Protocol-Version` 头 | ✅ rmcp（`validate_protocol_version_header`） |
+| R5 | 内容协商 `application/json` vs `text/event-stream` | ✅ rmcp |
+| R6 | 鉴权 `AIRP_HTTP_TOKEN` bearer + 常数时间校验，统一作用 `/mcp/v1` | ✅ 本服务 `require_bearer_auth` route_layer |
+| R7 | CORS 允许/暴露 `Authorization, Mcp-Session-Id, MCP-Protocol-Version` | ✅ 本服务 `CorsLayer`（暴露 `mcp-session-id`/`mcp-protocol-version`） |
+| R8 | 规范 JSON-RPC error code（协议不符 `-32602` 等） | ✅ rmcp |
 
-> 推荐路径：给 `rmcp` 开 `transport-streamable-http-server`（参照 AIRP-Core 的 `Cargo.toml`），用其自带 streamable-HTTP router 挂 `/mcp/v1`，替换手写桩 —— R1–R5、R8 基本由 rmcp 直接满足，本服务只保留外层鉴权（R6）与 CORS（R7）。
+### 实现（`feat/http-streamable-transport`）
+
+- 开 rmcp feature `transport-streamable-http-server`，用 `StreamableHttpService` 挂 `/mcp/v1`，替换手写桩。R1–R5、R8 由 rmcp 提供；R6/R7 本服务在外层包裹。
+- `allowed_hosts` 关闭（`disable_allowed_hosts`）以支持局域网部署（电脑后端 + 手机同 wifi）；安全模型 = bearer + 信任局域网。**勿公网暴露。**
+- **CI 验证**：编译 + 单元测试 + clippy + fmt 全绿。
+- **待实测（CI 验不了活体 HTTP）**：Gateway 的 3 条验收 —— `initialize` 返 `Mcp-Session-Id`、带会话头 `tools/list` 返 38 工具、`tools/call` 返真实内容。需起服务用 curl/Gateway 实跑（本机无 MSVC linker，未本地起服务）。
 
 ---
 
