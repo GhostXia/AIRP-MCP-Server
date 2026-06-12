@@ -97,7 +97,7 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 | 场景 | `build_scene_system_prompt` | 装配多角色场景系统提示词（前载 union 世界书；可选 `style_enhance` 注入对话范例+suffix 文风锚） |
 | 插件 | `plugin_kv_get` / `plugin_kv_set` | 插件 KV（`plugins/{name}/{key}.json`，任意 JSON，零 schema） |
 | 插件 | `plugin_jsonl_append` / `plugin_jsonl_read` | 插件 JSONL（O(1) 追加 / 分页读，带字节上限） |
-| 插件 | `plugin_blob_write` / `plugin_blob_read` | 插件任意文件（base64 / UTF-8；单次读上限 32 KiB raw，护住 token 预算；base64 约 1.33×，UTF-8 优先 as_text） |
+| 插件 | `plugin_blob_write` / `plugin_blob_read` | 插件任意文件。读默认 `encoding=auto`：服务端探测 UTF-8 → 返文本；**二进制只返描述符不倒 base64**（乱码白烧 token），需要才 `encoding=base64`。单次 32 KiB raw |
 
 > **M_PLUGIN_DATA（戒律 4 · 开放接入）**：任何第三方插件、任何语言，取一个 `plugin_name` 命名空间即可在 `data/plugins/{plugin_name}/` 存取自己的数据 —— 无 manifest、无注册、无 schema 强制。AIRP 不解析、不校验、不索引其语义。
 

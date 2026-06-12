@@ -1024,13 +1024,14 @@ fn plugin_blob_write_tool() -> Tool {
 fn plugin_blob_read_tool() -> Tool {
     Tool::new(
         "plugin_blob_read",
-        "Read a plugin file. Default returns content_base64; as_text=true returns content_text (UTF-8). Single-read cap 32 KiB raw — base64 output is ~1.33x larger, so prefer as_text for UTF-8 content. Larger files error; read from filesystem directly or page.",
+        "Read a plugin file. encoding=auto (default): AIRP detects UTF-8 server-side and returns content_text; for BINARY it returns only a cheap descriptor {size, head_hex, note} and does NOT base64-dump (base64 of non-text is meaningless gibberish that burns tokens) — read it from the filesystem or pass encoding=base64 to force. encoding=text errors on non-UTF-8. Single-read cap 32 KiB raw (base64 ~1.33x larger). Oversized files return a descriptor, not content.",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
                 "plugin_name": { "type": "string", "description": "Plugin namespace" },
                 "rel_path": { "type": "string", "description": "Relative path under plugins/{name}/" },
-                "as_text": { "type": "boolean", "description": "true = UTF-8 text, false = base64 (default)", "default": false }
+                "encoding": { "type": "string", "enum": ["auto", "text", "base64"], "description": "auto = text if UTF-8 else a binary descriptor (no dump); text = force UTF-8; base64 = force raw bytes as base64", "default": "auto" },
+                "as_text": { "type": "boolean", "description": "Back-compat shortcut: true -> encoding=text, false -> encoding=base64. Prefer `encoding`." }
             },
             "required": ["plugin_name", "rel_path"]
         })),

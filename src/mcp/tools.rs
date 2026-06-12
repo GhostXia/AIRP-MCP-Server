@@ -1779,7 +1779,13 @@ impl AirpMcpServer {
             .as_str()
             .ok_or_else(|| AirpError::Validation("Missing rel_path".into()))?;
         validate_id_segment(plugin_name)?;
-        let as_text = args["as_text"].as_bool().unwrap_or(false);
+        // encoding: "auto" (default) | "text" | "base64". `as_text` kept for
+        // back-compat (true -> text, false -> base64).
+        let encoding = match args["as_text"].as_bool() {
+            Some(true) => "text",
+            Some(false) => "base64",
+            None => args["encoding"].as_str().unwrap_or("auto"),
+        };
 
         let dir = self.storage.plugin_dir(plugin_name);
         if !dir.exists() {
@@ -1799,31 +1805,73 @@ impl AirpMcpServer {
             .await
             .map(|m| m.len())
             .unwrap_or(0);
+        // Oversized → never dump; return a cheap descriptor instead of erroring
+        // so the caller still learns the size/path.
         if size > MAX_BLOB_READ {
-            return Err(AirpError::Validation(format!(
-                "blob size {} exceeds single-read cap {} bytes; read plugins/{}/{} from filesystem directly",
-                size, MAX_BLOB_READ, plugin_name, rel_path
-            )));
+            return Ok(serde_json::json!({
+                "plugin_name": plugin_name,
+                "rel_path": rel_path,
+                "size": size,
+                "returned": false,
+                "encoding": "too_large",
+                "note": format!(
+                    "{} bytes exceeds single-read cap {} bytes; not returned. Read plugins/{}/{} from the filesystem, or page.",
+                    size, MAX_BLOB_READ, plugin_name, rel_path
+                ),
+            })
+            .to_string());
         }
+
         let bytes = tokio::fs::read(&target).await?;
-        let mut out = serde_json::json!({
-            "plugin_name": plugin_name,
-            "rel_path": rel_path,
-            "size": bytes.len(),
-        });
-        if as_text {
-            let text = String::from_utf8(bytes).map_err(|_| {
-                AirpError::Validation(
-                    "file is not valid UTF-8; use as_text=false for base64".into(),
-                )
-            })?;
-            out["content_text"] = serde_json::Value::String(text);
-        } else {
-            use base64::Engine;
-            out["content_base64"] =
-                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(&bytes));
+        match encoding {
+            "text" => {
+                let text = String::from_utf8(bytes).map_err(|_| {
+                    AirpError::Validation(
+                        "file is not valid UTF-8; use encoding=base64 for raw bytes".into(),
+                    )
+                })?;
+                Ok(serde_json::json!({
+                    "plugin_name": plugin_name, "rel_path": rel_path,
+                    "size": text.len(), "returned": true, "encoding": "text",
+                    "content_text": text,
+                })
+                .to_string())
+            }
+            "base64" => {
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                Ok(serde_json::json!({
+                    "plugin_name": plugin_name, "rel_path": rel_path,
+                    "size": bytes.len(), "returned": true, "encoding": "base64",
+                    "content_base64": b64,
+                })
+                .to_string())
+            }
+            _ => {
+                // auto: text for UTF-8; for binary, a cheap descriptor — never
+                // auto-dump base64 (meaningless gibberish that burns tokens).
+                match String::from_utf8(bytes) {
+                    Ok(text) => Ok(serde_json::json!({
+                        "plugin_name": plugin_name, "rel_path": rel_path,
+                        "size": text.len(), "returned": true, "encoding": "text",
+                        "content_text": text,
+                    })
+                    .to_string()),
+                    Err(e) => {
+                        let raw = e.into_bytes();
+                        let head_hex: String =
+                            raw.iter().take(16).map(|b| format!("{:02x}", b)).collect();
+                        Ok(serde_json::json!({
+                            "plugin_name": plugin_name, "rel_path": rel_path,
+                            "size": raw.len(), "returned": false, "encoding": "binary",
+                            "head_hex": head_hex,
+                            "note": "binary content not returned (base64 would waste tokens on non-text). Read from the filesystem, or call again with encoding=base64 to force.",
+                        })
+                        .to_string())
+                    }
+                }
+            }
         }
-        Ok(out.to_string())
     }
 }
 
