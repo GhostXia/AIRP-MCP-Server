@@ -183,7 +183,7 @@ impl AirpMcpServer {
         // Cap content returned into the model context. Mirrors read_preset_raw:
         // truncate oversized files with a [PARTIAL: ...] marker instead of
         // dumping the whole file and burning the token budget.
-        let max_len = crate::mcp::MAX_READ_BYTES;
+        let max_len = crate::mcp::max_read_bytes();
         if content.len() > max_len {
             let mut end = max_len;
             while end > 0 && !content.is_char_boundary(end) {

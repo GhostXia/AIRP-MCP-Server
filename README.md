@@ -97,7 +97,7 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 | 场景 | `build_scene_system_prompt` | 装配多角色场景系统提示词（前载 union 世界书；可选 `style_enhance` 注入对话范例+suffix 文风锚） |
 | 插件 | `plugin_kv_get` / `plugin_kv_set` | 插件 KV（`plugins/{name}/{key}.json`，任意 JSON，零 schema） |
 | 插件 | `plugin_jsonl_append` / `plugin_jsonl_read` | 插件 JSONL（O(1) 追加 / 分页读，带字节上限） |
-| 插件 | `plugin_blob_write` / `plugin_blob_read` | 插件任意文件（base64 / UTF-8；单次读上限 256 KiB，护住 token 预算） |
+| 插件 | `plugin_blob_write` / `plugin_blob_read` | 插件任意文件。读默认 `encoding=auto`：服务端探测 UTF-8 → 返文本；**二进制只返描述符不倒 base64**（乱码白烧 token），需要才 `encoding=base64`。单次 32 KiB raw |
 
 > **M_PLUGIN_DATA（戒律 4 · 开放接入）**：任何第三方插件、任何语言，取一个 `plugin_name` 命名空间即可在 `data/plugins/{plugin_name}/` 存取自己的数据 —— 无 manifest、无注册、无 schema 强制。AIRP 不解析、不校验、不索引其语义。
 
@@ -239,7 +239,7 @@ cargo fmt
 AIRP 的威胁模型假设 **本地、单用户、stdio / loopback** 运行。基于此：
 
 - **路径安全**：所有插件/预设的读写经**组件式**校验 —— 拒 `..` 逃逸、拒绝对路径、拒符号链接，结果锁在 `data/` 根内（`Storage::safe_resolve_for_write`）。
-- **输入限制**：`import_card` 的 PNG ≤ 10 MiB（`png_path` 走 metadata 预检，炸弹文件不读即拒），PNG 解码器设分配上限（挡 zlib 压缩炸弹）；工具单次读 ≤ 256 KiB；预设 raw / JSONL 超限截断或分页。
+- **输入限制**：`import_card` 的 PNG ≤ 10 MiB（`png_path` 走 metadata 预检，炸弹文件不读即拒），PNG 解码器设分配上限（挡 zlib 压缩炸弹）；工具单次读 ≤ 32 KiB（≈9K token 文本；base64 约 1.33×；可用环境变量 `AIRP_MAX_READ_BYTES` 覆盖，下限 1 KiB）；`plugin_blob_read` 默认 `encoding=auto`，二进制只返描述符不倒 base64；预设 raw / JSONL 超限截断或分页。
 - **PNG 导入用 `png_path` 而非 `png_base64`**：让 AIRP **服务端直接读盘解析**，base64 **永不进模型上下文** —— 否则 Agent 为产生 base64 得先把 PNG 读进上下文（10 MiB 卡 ≈ 13 MiB 文本），**烧光 token**。
 - **插件信任模型**：`data/plugins/` 是**零 schema、开放接入**（戒律 4）—— AIRP 不解析、不校验、不沙箱化插件数据语义。插件写入被限制在自己的 `plugins/{name}/` 命名空间内（拒 `..`/绝对路径/符号链接），**但内容本身不受信任**。⚠️ **只安装可信来源的插件。**
 - **HTTP 暴露：局域网 OK，公网 NO**。`serve --bind` 支持同 wifi 下「电脑跑后端 + 手机对话」这类用法。
