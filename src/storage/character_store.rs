@@ -21,7 +21,7 @@ impl<'a> CharacterStore<'a> {
     pub async fn import_from_png(&self, png_data: &[u8]) -> Result<Character> {
         // Parse PNG chara chunk
         let card = self.parse_png_card(png_data).await?;
-        let id = CharacterId::new(&sanitize_id(&card.name))?;
+        let id = CharacterId::new(sanitize_id(&card.name))?;
 
         // Create character directory
         let char_dir = self.storage.character_dir(&id);
@@ -206,9 +206,9 @@ impl<'a> CharacterStore<'a> {
 
         let mut decoder = png::Decoder::new(Cursor::new(png_data));
         // Bound decoder allocation to limit zlib decompression-bomb expansion.
-        let mut limits = png::Limits::default();
-        limits.bytes = 64 * 1024 * 1024;
-        decoder.set_limits(limits);
+        decoder.set_limits(png::Limits {
+            bytes: 64 * 1024 * 1024,
+        });
         let reader = decoder
             .read_info()
             .map_err(|e| AirpError::PngParse(e.to_string()))?;

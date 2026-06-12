@@ -55,7 +55,7 @@ impl<'a> PresetStore<'a> {
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "json") {
+            if path.extension().is_some_and(|e| e == "json") {
                 if let Ok(json) = fs::read_to_string(&path).await {
                     if let Ok(preset) = serde_json::from_str::<Preset>(&json) {
                         presets.push(preset);

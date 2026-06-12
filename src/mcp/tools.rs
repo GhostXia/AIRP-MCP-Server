@@ -131,7 +131,7 @@ impl AirpMcpServer {
 
         let session_id = args["session_id"]
             .as_str()
-            .map(|s| SessionId::new(s))
+            .map(SessionId::new)
             .transpose()?;
 
         let preset_id_str = args["preset_id"].as_str();
@@ -193,12 +193,7 @@ impl AirpMcpServer {
         // Load live state
         let state = char_store.get_live_state(&char_id).await?;
         if !state.values.is_empty() {
-            let state_summary = state
-                .values
-                .iter()
-                .map(|(k, _)| k.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
+            let state_summary = state.values.keys().cloned().collect::<Vec<_>>().join(", ");
             info_lines.push(format!("Live state fields: [{}]", state_summary));
         } else {
             info_lines.push("Live state: empty (tracking not yet started)".to_string());
@@ -1472,7 +1467,7 @@ impl AirpMcpServer {
             scripts.push(v);
         }
 
-        serde_json::to_string(&scripts).map_err(|e| AirpError::Json(e))
+        serde_json::to_string(&scripts).map_err(AirpError::Json)
     }
 
     pub async fn handle_remove_preset_regex_script(

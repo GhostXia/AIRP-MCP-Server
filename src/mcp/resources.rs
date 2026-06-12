@@ -315,7 +315,7 @@ impl AirpMcpServer {
 
             while let Some(entry) = entries.next_entry().await? {
                 let path = entry.path();
-                if path.extension().map_or(false, |e| e == "md") {
+                if path.extension().is_some_and(|e| e == "md") {
                     if latest.is_none() || path > latest.clone().unwrap() {
                         latest = Some(path);
                     }

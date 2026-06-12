@@ -28,6 +28,7 @@ impl Default for DecomposeConfig {
 }
 
 /// 角色卡拆解器
+#[derive(Default)]
 pub struct CharacterDecomposer;
 
 impl CharacterDecomposer {
@@ -447,6 +448,7 @@ impl CharacterDecomposer {
 }
 
 /// 预设拆解器
+#[derive(Default)]
 pub struct PresetDecomposer;
 
 impl PresetDecomposer {
