@@ -21,11 +21,21 @@ pub use decompose::{CharacterDecomposer, DecomposeConfig, DecomposeResult, Prese
 /// when read whole, blows the token budget. Oversized reads error or truncate
 /// with a `[PARTIAL: ...]` marker so the caller pages instead of dumping.
 ///
-/// 32 KiB ≈ ~9K tokens as text; as base64 (blob_read) it expands ~1.33x to
-/// ~15-22K tokens. Kept deliberately tight: a single read should be a chunk,
-/// not a context-window-filling dump. (256 KiB base64 would have been ~150K
-/// tokens — almost a whole context window.)
-pub(crate) const MAX_READ_BYTES: usize = 32 * 1024;
+/// Default 32 KiB ≈ ~9K tokens as text (base64 expands ~1.33x). A single read
+/// should be a chunk, not a context-window-filling dump. Override per
+/// deployment with the `AIRP_MAX_READ_BYTES` env var (floored at 1 KiB); read
+/// once and cached.
+pub(crate) fn max_read_bytes() -> usize {
+    use std::sync::OnceLock;
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("AIRP_MAX_READ_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&n| n >= 1024)
+            .unwrap_or(32 * 1024)
+    })
+}
 
 #[derive(Clone)]
 pub struct AirpMcpServer {

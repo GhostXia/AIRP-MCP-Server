@@ -239,7 +239,7 @@ cargo fmt
 AIRP 的威胁模型假设 **本地、单用户、stdio / loopback** 运行。基于此：
 
 - **路径安全**：所有插件/预设的读写经**组件式**校验 —— 拒 `..` 逃逸、拒绝对路径、拒符号链接，结果锁在 `data/` 根内（`Storage::safe_resolve_for_write`）。
-- **输入限制**：`import_card` 的 PNG ≤ 10 MiB（`png_path` 走 metadata 预检，炸弹文件不读即拒），PNG 解码器设分配上限（挡 zlib 压缩炸弹）；工具单次读 ≤ 32 KiB（≈9K token 文本；base64 约 1.33×）；预设 raw / JSONL 超限截断或分页。
+- **输入限制**：`import_card` 的 PNG ≤ 10 MiB（`png_path` 走 metadata 预检，炸弹文件不读即拒），PNG 解码器设分配上限（挡 zlib 压缩炸弹）；工具单次读 ≤ 32 KiB（≈9K token 文本；base64 约 1.33×；可用环境变量 `AIRP_MAX_READ_BYTES` 覆盖，下限 1 KiB）；`plugin_blob_read` 默认 `encoding=auto`，二进制只返描述符不倒 base64；预设 raw / JSONL 超限截断或分页。
 - **PNG 导入用 `png_path` 而非 `png_base64`**：让 AIRP **服务端直接读盘解析**，base64 **永不进模型上下文** —— 否则 Agent 为产生 base64 得先把 PNG 读进上下文（10 MiB 卡 ≈ 13 MiB 文本），**烧光 token**。
 - **插件信任模型**：`data/plugins/` 是**零 schema、开放接入**（戒律 4）—— AIRP 不解析、不校验、不沙箱化插件数据语义。插件写入被限制在自己的 `plugins/{name}/` 命名空间内（拒 `..`/绝对路径/符号链接），**但内容本身不受信任**。⚠️ **只安装可信来源的插件。**
 - **HTTP 暴露：局域网 OK，公网 NO**。`serve --bind` 支持同 wifi 下「电脑跑后端 + 手机对话」这类用法。

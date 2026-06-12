@@ -1584,12 +1584,12 @@ impl AirpMcpServer {
                 .await
                 .map(|m| m.len())
                 .unwrap_or(0);
-            if size > crate::mcp::MAX_READ_BYTES as u64 {
+            if size > crate::mcp::max_read_bytes() as u64 {
                 return Err(AirpError::Validation(format!(
                     "KV value {}.json is {} bytes, exceeds single-read cap {} bytes; use plugin_blob_read or read from filesystem directly",
                     key,
                     size,
-                    crate::mcp::MAX_READ_BYTES
+                    crate::mcp::max_read_bytes()
                 )));
             }
             let raw = tokio::fs::read_to_string(&path).await?;
@@ -1707,8 +1707,8 @@ impl AirpMcpServer {
         let all: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
         let total = all.len();
         // Cap by cumulative bytes too, not just line count: 1000 huge lines would
-        // still blow the token budget. Stop before exceeding MAX_READ_BYTES.
-        let mut byte_budget = crate::mcp::MAX_READ_BYTES;
+        // still blow the token budget. Stop before exceeding max_read_bytes().
+        let mut byte_budget = crate::mcp::max_read_bytes();
         let mut truncated = false;
         let mut lines: Vec<serde_json::Value> = Vec::new();
         for l in all.into_iter().skip(offset).take(limit) {
@@ -1771,7 +1771,7 @@ impl AirpMcpServer {
     }
 
     pub async fn handle_plugin_blob_read(&self, args: Value) -> Result<String> {
-        const MAX_BLOB_READ: u64 = crate::mcp::MAX_READ_BYTES as u64;
+        let max_blob_read: u64 = crate::mcp::max_read_bytes() as u64;
         let plugin_name = args["plugin_name"]
             .as_str()
             .ok_or_else(|| AirpError::Validation("Missing plugin_name".into()))?;
@@ -1807,7 +1807,7 @@ impl AirpMcpServer {
             .unwrap_or(0);
         // Oversized → never dump; return a cheap descriptor instead of erroring
         // so the caller still learns the size/path.
-        if size > MAX_BLOB_READ {
+        if size > max_blob_read {
             return Ok(serde_json::json!({
                 "plugin_name": plugin_name,
                 "rel_path": rel_path,
@@ -1816,7 +1816,7 @@ impl AirpMcpServer {
                 "encoding": "too_large",
                 "note": format!(
                     "{} bytes exceeds single-read cap {} bytes; not returned. Read plugins/{}/{} from the filesystem, or page.",
-                    size, MAX_BLOB_READ, plugin_name, rel_path
+                    size, max_blob_read, plugin_name, rel_path
                 ),
             })
             .to_string());
