@@ -1,5 +1,5 @@
 //! 角色卡拆解工具和提示词
-//! 
+//!
 //! 设计思路：通过MCP提示词引导Agent执行拆解，而非AIRP自造runtime
 
 use crate::error::Result;
@@ -28,13 +28,14 @@ impl Default for DecomposeConfig {
 }
 
 /// 角色卡拆解器
+#[derive(Default)]
 pub struct CharacterDecomposer;
 
 impl CharacterDecomposer {
     pub fn new() -> Self {
         Self
     }
-    
+
     /// 执行拆解（基础部分，不含Agent增强）
     pub async fn decompose(
         &self,
@@ -44,55 +45,55 @@ impl CharacterDecomposer {
         let target_dir = std::path::Path::new(&config.target_dir)
             .join("characters")
             .join(character.id.as_ref());
-        
+
         // 创建目录结构
         fs::create_dir_all(&target_dir).await?;
         fs::create_dir_all(target_dir.join("world_book")).await?;
-        
+
         let mut files_written = vec![];
-        
+
         // 1. 写入 basic_info.md
         let basic_info = self.generate_basic_info(character);
         let path = target_dir.join("basic_info.md");
         fs::write(&path, basic_info).await?;
         files_written.push(path.display().to_string());
-        
+
         // 2. 写入 personality.md
         let personality = self.generate_personality(character);
         let path = target_dir.join("personality.md");
         fs::write(&path, personality).await?;
         files_written.push(path.display().to_string());
-        
+
         // 3. 写入 world_setting.md
         let world_setting = self.generate_world_setting(character);
         let path = target_dir.join("world_setting.md");
         fs::write(&path, world_setting).await?;
         files_written.push(path.display().to_string());
-        
+
         // 4. 写入 speech_style.md
         let speech_style = self.generate_speech_style(character);
         let path = target_dir.join("speech_style.md");
         fs::write(&path, speech_style).await?;
         files_written.push(path.display().to_string());
-        
+
         // 5. 写入 greetings.md
         let greetings = self.generate_greetings(character);
         let path = target_dir.join("greetings.md");
         fs::write(&path, greetings).await?;
         files_written.push(path.display().to_string());
-        
+
         // 6. 写入 state_schema.md
         let state_schema = self.generate_state_schema(character);
         let path = target_dir.join("state_schema.md");
         fs::write(&path, state_schema).await?;
         files_written.push(path.display().to_string());
-        
+
         // 7. 生成 README.md（最后，包含索引）
         let readme = self.generate_readme(character, &files_written);
         let path = target_dir.join("README.md");
         fs::write(&path, readme).await?;
         files_written.push(path.display().to_string());
-        
+
         Ok(DecomposeResult {
             character_id: character.id.clone(),
             target_dir: target_dir.display().to_string(),
@@ -100,7 +101,7 @@ impl CharacterDecomposer {
             needs_enhancement: config.enhance_analysis,
         })
     }
-    
+
     /// 拆解世界书
     pub async fn decompose_lorebook(
         &self,
@@ -112,11 +113,11 @@ impl CharacterDecomposer {
             .join("characters")
             .join(character_id.as_ref())
             .join("world_book");
-        
+
         fs::create_dir_all(&target_dir).await?;
-        
+
         let mut files_written = vec![];
-        
+
         // 写入每个条目
         for (idx, entry) in lorebook.entries.iter().enumerate() {
             let entry_md = self.generate_lorebook_entry(entry, idx);
@@ -125,20 +126,21 @@ impl CharacterDecomposer {
             fs::write(&path, entry_md).await?;
             files_written.push(path.display().to_string());
         }
-        
+
         // 写入索引
         let index = self.generate_lorebook_index(&lorebook.entries);
         let path = target_dir.join("index.md");
         fs::write(&path, index).await?;
         files_written.push(path.display().to_string());
-        
+
         Ok(files_written)
     }
-    
+
     // === 生成各模块的Markdown内容 ===
-    
+
     fn generate_basic_info(&self, character: &Character) -> String {
-        format!(r#"# 基础信息
+        format!(
+            r#"# 基础信息
 
 ## 名称
 {name}
@@ -164,7 +166,10 @@ impl CharacterDecomposer {
             description = character.card.description,
             creator = character.card.creator.as_deref().unwrap_or("未知"),
             version = character.card.character_version.as_deref().unwrap_or("1.0"),
-            tags = character.card.tags.iter()
+            tags = character
+                .card
+                .tags
+                .iter()
                 .map(|t| format!("- {}", t))
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -173,9 +178,10 @@ impl CharacterDecomposer {
             updated = character.data.updated_at.format("%Y-%m-%d %H:%M:%S"),
         )
     }
-    
+
     fn generate_personality(&self, character: &Character) -> String {
-        format!(r#"# 性格特征
+        format!(
+            r#"# 性格特征
 
 {personality}
 
@@ -194,9 +200,10 @@ impl CharacterDecomposer {
             },
         )
     }
-    
+
     fn generate_world_setting(&self, character: &Character) -> String {
-        format!(r#"# 世界观设定
+        format!(
+            r#"# 世界观设定
 
 ## 场景背景
 {scenario}
@@ -218,9 +225,10 @@ impl CharacterDecomposer {
             },
         )
     }
-    
+
     fn generate_speech_style(&self, character: &Character) -> String {
-        format!(r#"# 说话风格
+        format!(
+            r#"# 说话风格
 
 ## 示例对话
 {examples}
@@ -243,9 +251,10 @@ impl CharacterDecomposer {
             },
         )
     }
-    
+
     fn generate_greetings(&self, character: &Character) -> String {
-        let mut content = format!(r#"# 开场白
+        let mut content = format!(
+            r#"# 开场白
 
 ## 默认开场白
 {first_mes}
@@ -256,7 +265,7 @@ impl CharacterDecomposer {
                 character.card.first_mes.clone()
             },
         );
-        
+
         // 添加备选开场白
         if let Some(ext) = &character.card.extensions {
             if let Some(alts) = ext.get("alternate_greetings").and_then(|v| v.as_array()) {
@@ -270,18 +279,21 @@ impl CharacterDecomposer {
                 }
             }
         }
-        
-        content.push_str(r#"
+
+        content.push_str(
+            r#"
 ## 开场白选择建议
 <!-- Agent分析后填充 -->
 <!-- 请根据角色特点，给出不同场景下的开场白选择建议 -->
-"#);
-        
+"#,
+        );
+
         content
     }
-    
+
     fn generate_state_schema(&self, character: &Character) -> String {
-        format!(r#"# 状态追踪定义
+        format!(
+            r#"# 状态追踪定义
 
 > 该角色是否支持状态追踪: {has_tracking}
 
@@ -313,12 +325,17 @@ impl CharacterDecomposer {
 <!-- Agent分析后填充 -->
 <!-- 请根据角色卡内容，推断可能需要追踪的状态字段 -->
 "#,
-            has_tracking = if character.data.has_state_tracking { "是" } else { "否" },
+            has_tracking = if character.data.has_state_tracking {
+                "是"
+            } else {
+                "否"
+            },
         )
     }
-    
+
     fn generate_readme(&self, character: &Character, files: &[String]) -> String {
-        format!(r#"# {name}
+        format!(
+            r#"# {name}
 
 > 导入时间: {timestamp}
 > 来源: {source}
@@ -354,18 +371,25 @@ impl CharacterDecomposer {
                 Some(AnalysisTier::Tier3Advanced) => "Tier 3 (高级)",
                 None => "未分析",
             },
-            desc_short = character.card.description.chars().take(100).collect::<String>(),
+            desc_short = character
+                .card
+                .description
+                .chars()
+                .take(100)
+                .collect::<String>(),
             tags = character.card.tags.join(", "),
             file_count = files.len(),
-            file_list = files.iter()
+            file_list = files
+                .iter()
                 .map(|f| format!("- {}", f))
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
     }
-    
+
     fn generate_lorebook_entry(&self, entry: &LorebookEntry, _idx: usize) -> String {
-        format!(r#"# {name}
+        format!(
+            r#"# {name}
 
 > ID: {id}
 > 触发关键词: {keys}
@@ -386,9 +410,10 @@ impl CharacterDecomposer {
             content = entry.content,
         )
     }
-    
+
     fn generate_lorebook_index(&self, entries: &[LorebookEntry]) -> String {
-        let mut content = format!(r#"# 世界书索引
+        let mut content = format!(
+            r#"# 世界书索引
 
 > 共 {} 条条目
 
@@ -396,8 +421,10 @@ impl CharacterDecomposer {
 
 | 编号 | 名称 | 触发关键词 | 文件 |
 |------|------|------------|------|
-"#, entries.len());
-        
+"#,
+            entries.len()
+        );
+
         for (idx, entry) in entries.iter().enumerate() {
             let filename = format!("entry_{:03}_{}.md", idx + 1, sanitize_filename(&entry.id));
             content.push_str(&format!(
@@ -408,24 +435,27 @@ impl CharacterDecomposer {
                 filename,
             ));
         }
-        
-        content.push_str(r#"
+
+        content.push_str(
+            r#"
 ## 使用说明
 当对话中出现触发关键词时，Agent应查阅对应条目获取背景信息。
-"#);
-        
+"#,
+        );
+
         content
     }
 }
 
 /// 预设拆解器
+#[derive(Default)]
 pub struct PresetDecomposer;
 
 impl PresetDecomposer {
     pub fn new() -> Self {
         Self
     }
-    
+
     pub async fn decompose(
         &self,
         preset: &Preset,
@@ -434,35 +464,35 @@ impl PresetDecomposer {
         let target_dir = std::path::Path::new(&config.target_dir)
             .join("presets")
             .join(preset.id.as_ref());
-        
+
         fs::create_dir_all(&target_dir).await?;
-        
+
         let mut files_written = vec![];
-        
+
         // 1. system_prompt.md
         let system_prompt = self.generate_system_prompt(preset);
         let path = target_dir.join("system_prompt.md");
         fs::write(&path, system_prompt).await?;
         files_written.push(path.display().to_string());
-        
+
         // 2. regex_rules.md
         let regex_rules = self.generate_regex_rules(preset);
         let path = target_dir.join("regex_rules.md");
         fs::write(&path, regex_rules).await?;
         files_written.push(path.display().to_string());
-        
+
         // 3. parameters.md
         let parameters = self.generate_parameters(preset);
         let path = target_dir.join("parameters.md");
         fs::write(&path, parameters).await?;
         files_written.push(path.display().to_string());
-        
+
         // 4. README.md
         let readme = self.generate_readme(preset);
         let path = target_dir.join("README.md");
         fs::write(&path, readme).await?;
         files_written.push(path.display().to_string());
-        
+
         Ok(DecomposeResult {
             character_id: CharacterId::new(preset.id.as_ref())?,
             target_dir: target_dir.display().to_string(),
@@ -470,9 +500,10 @@ impl PresetDecomposer {
             needs_enhancement: false,
         })
     }
-    
+
     fn generate_system_prompt(&self, preset: &Preset) -> String {
-        format!(r#"# 系统提示词
+        format!(
+            r#"# 系统提示词
 
 ## 前缀
 ```
@@ -506,18 +537,22 @@ impl PresetDecomposer {
             },
         )
     }
-    
+
     fn generate_regex_rules(&self, preset: &Preset) -> String {
-        let mut content = format!(r#"# 正则过滤规则
+        let mut content = format!(
+            r#"# 正则过滤规则
 
 > 共 {} 条规则
 
 ## 规则列表
 
-"#, preset.config.regex_scripts.len());
-        
+"#,
+            preset.config.regex_scripts.len()
+        );
+
         for (idx, script) in preset.config.regex_scripts.iter().enumerate() {
-            content.push_str(&format!(r#"### 规则 {}: {}
+            content.push_str(&format!(
+                r#"### 规则 {}: {}
 
 - **查找**: `{}`
 - **替换**: `{}`
@@ -531,12 +566,13 @@ impl PresetDecomposer {
                 if script.enabled { "启用" } else { "禁用" },
             ));
         }
-        
+
         content
     }
-    
+
     fn generate_parameters(&self, preset: &Preset) -> String {
-        format!(r#"# 模型参数
+        format!(
+            r#"# 模型参数
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
@@ -557,16 +593,20 @@ impl PresetDecomposer {
             if preset.config.stop_sequences.is_empty() {
                 "（无）".to_string()
             } else {
-                preset.config.stop_sequences.iter()
+                preset
+                    .config
+                    .stop_sequences
+                    .iter()
                     .map(|s| format!("```\n{}\n```", s))
                     .collect::<Vec<_>>()
                     .join("\n")
             },
         )
     }
-    
+
     fn generate_readme(&self, preset: &Preset) -> String {
-        format!(r#"# 预设: {name}
+        format!(
+            r#"# 预设: {name}
 
 > ID: {id}
 

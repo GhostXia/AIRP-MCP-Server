@@ -1,5 +1,5 @@
 //! AIRP MCP Server
-//! 
+//!
 //! 一个为角色扮演(RP)数据管理而设计的MCP Server。
 //! 支持stdio和HTTP两种传输模式。
 
@@ -52,7 +52,9 @@ async fn main() -> Result<(), AirpError> {
             info!("Data directory: {}", data_dir);
 
             let server = mcp::AirpMcpServer::new(&data_dir)?;
-            transport::stdio::run_stdio_server(server).await.map_err(|e| AirpError::Transport(e.to_string()))?;
+            transport::stdio::run_stdio_server(server)
+                .await
+                .map_err(|e| AirpError::Transport(e.to_string()))?;
         }
         Commands::Serve { bind, data_dir } => {
             info!("Starting AIRP HTTP Server");

@@ -29,17 +29,18 @@ impl Lorebook {
             .filter(|e| e.enabled && e.matches(text))
             .collect()
     }
-    
+
     /// Build context string from matched entries
     pub fn build_context(&self, text: &str) -> String {
         let matches = self.find_matches(text);
         if matches.is_empty() {
             return String::new();
         }
-        
+
         let mut parts = vec!["[World Information]".to_string()];
         for entry in matches {
-            parts.push(format!("- {}: {}", 
+            parts.push(format!(
+                "- {}: {}",
                 entry.name.as_deref().unwrap_or(&entry.id),
                 entry.content
             ));
@@ -56,7 +57,7 @@ impl LorebookEntry {
         } else {
             text.to_lowercase()
         };
-        
+
         self.keys.iter().any(|key| {
             let key_to_check = if self.case_sensitive {
                 key.clone()

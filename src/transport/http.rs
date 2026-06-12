@@ -5,14 +5,14 @@
 //! MCP Client (Agent) via Tools / Resources / Prompts.
 
 use axum::{
-    routing::{get, post},
     Router,
-    response::sse::{Event, Sse},
-    extract::{State, Request},
     body::Bytes,
-    response::{IntoResponse, Response},
+    extract::{Request, State},
     http::{StatusCode, header},
     middleware::{self, Next},
+    response::sse::{Event, Sse},
+    response::{IntoResponse, Response},
+    routing::{get, post},
 };
 use std::convert::Infallible;
 use std::time::Duration;
@@ -41,10 +41,11 @@ pub async fn run_http_server(bind: &str, data_dir: &str) -> Result<()> {
 
     let (sse_tx, _sse_rx) = broadcast::channel(100);
 
-    let auth_token = std::env::var("AIRP_HTTP_TOKEN").ok().filter(|t| !t.is_empty());
-    let is_loopback = bind.starts_with("127.")
-        || bind.starts_with("localhost")
-        || bind.starts_with("[::1]");
+    let auth_token = std::env::var("AIRP_HTTP_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    let is_loopback =
+        bind.starts_with("127.") || bind.starts_with("localhost") || bind.starts_with("[::1]");
     match (&auth_token, is_loopback) {
         (Some(_), _) => info!("HTTP bearer auth enabled (AIRP_HTTP_TOKEN set)"),
         (None, false) => warn!(
@@ -56,13 +57,20 @@ pub async fn run_http_server(bind: &str, data_dir: &str) -> Result<()> {
         (None, true) => {}
     }
 
-    let state = HttpState { mcp_server, sse_tx, auth_token };
+    let state = HttpState {
+        mcp_server,
+        sse_tx,
+        auth_token,
+    };
 
     let app = Router::new()
         .route("/mcp/v1", post(handle_mcp_post))
         .route("/mcp/v1", get(handle_mcp_sse))
         // Auth applies only to routes defined above this layer; /health stays open.
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_bearer_auth))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_bearer_auth,
+        ))
         .route("/health", get(health_check))
         .with_state(state);
 
@@ -75,11 +83,7 @@ pub async fn run_http_server(bind: &str, data_dir: &str) -> Result<()> {
 
 /// Reject MCP requests lacking a valid bearer token, when one is configured.
 /// No-op when auth_token is None (loopback/LAN-trust default).
-async fn require_bearer_auth(
-    State(state): State<HttpState>,
-    req: Request,
-    next: Next,
-) -> Response {
+async fn require_bearer_auth(State(state): State<HttpState>, req: Request, next: Next) -> Response {
     if let Some(token) = state.auth_token.as_deref() {
         let presented = req
             .headers()
@@ -113,10 +117,7 @@ async fn health_check() -> &'static str {
     "AIRP MCP Server"
 }
 
-async fn handle_mcp_post(
-    State(_state): State<HttpState>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_mcp_post(State(_state): State<HttpState>, body: Bytes) -> impl IntoResponse {
     let request: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response(),

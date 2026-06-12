@@ -36,15 +36,15 @@ impl Message {
             metadata: None,
         }
     }
-    
+
     pub fn system(content: impl Into<String>) -> Self {
         Self::new(MessageRole::System, content)
     }
-    
+
     pub fn user(content: impl Into<String>) -> Self {
         Self::new(MessageRole::User, content)
     }
-    
+
     pub fn assistant(content: impl Into<String>) -> Self {
         Self::new(MessageRole::Assistant, content)
     }

@@ -50,7 +50,7 @@ impl LiveState {
             updated_at: chrono::Utc::now(),
         }
     }
-    
+
     /// Update state with delta
     pub fn update(&mut self, delta: serde_json::Value) {
         if let serde_json::Value::Object(map) = delta {
@@ -61,34 +61,41 @@ impl LiveState {
                         obj.get("value").and_then(|v| v.as_f64()),
                         obj.get("max").and_then(|v| v.as_f64()),
                     ) {
-                        self.values.insert(key, StateValue::Number { value: val, max });
+                        self.values
+                            .insert(key, StateValue::Number { value: val, max });
                         continue;
                     }
                 }
-                
+
                 // Try as number directly
                 if let Some(num) = value.as_f64() {
-                    self.values.insert(key, StateValue::Number { value: num, max: None });
+                    self.values.insert(
+                        key,
+                        StateValue::Number {
+                            value: num,
+                            max: None,
+                        },
+                    );
                     continue;
                 }
-                
+
                 // Try as string
                 if let Some(text) = value.as_str() {
                     self.values.insert(key, StateValue::Text(text.to_string()));
                     continue;
                 }
-                
+
                 // Store as object
                 self.values.insert(key, StateValue::Object(value));
             }
         }
         self.updated_at = chrono::Utc::now();
     }
-    
+
     /// Format for system prompt injection
     pub fn format_for_prompt(&self, schema: Option<&StateSchema>) -> String {
         let mut lines = vec!["[Current State]".to_string()];
-        
+
         if let Some(schema) = schema {
             for field in &schema.fields {
                 if let Some(value) = self.values.get(&field.key) {
@@ -123,8 +130,10 @@ impl LiveState {
                 lines.push(formatted);
             }
         }
-        
-        lines.push("\nUpdate your state in <state>{...}</state> tags when values change.".to_string());
+
+        lines.push(
+            "\nUpdate your state in <state>{...}</state> tags when values change.".to_string(),
+        );
         lines.join("\n")
     }
 }

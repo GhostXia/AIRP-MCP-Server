@@ -98,7 +98,10 @@ async fn test_seal_volume_and_rollback() {
     // Setup
     let card = common::create_test_card();
     let png_base64 = common::card_to_base64(&card);
-    server.handle_import_card(serde_json::json!({"png_base64": png_base64})).await.unwrap();
+    server
+        .handle_import_card(serde_json::json!({"png_base64": png_base64}))
+        .await
+        .unwrap();
 
     let start_args = serde_json::json!({"character_id": "testcharacter"});
     let result = server.handle_start_session(start_args).await.unwrap();
@@ -106,12 +109,15 @@ async fn test_seal_volume_and_rollback() {
 
     // Add messages
     for i in 1..=5 {
-        server.handle_append_message(serde_json::json!({
-            "character_id": "testcharacter",
-            "session_id": &session_id,
-            "role": "user",
-            "content": format!("Message {}", i)
-        })).await.unwrap();
+        server
+            .handle_append_message(serde_json::json!({
+                "character_id": "testcharacter",
+                "session_id": &session_id,
+                "role": "user",
+                "content": format!("Message {}", i)
+            }))
+            .await
+            .unwrap();
     }
 
     // Seal volume
@@ -135,12 +141,15 @@ async fn test_seal_volume_and_rollback() {
 
     // Add 3 messages, then rollback 2
     for i in 1..=3 {
-        server.handle_append_message(serde_json::json!({
-            "character_id": "testcharacter",
-            "session_id": &session_id,
-            "role": "user",
-            "content": format!("Msg {}", i)
-        })).await.unwrap();
+        server
+            .handle_append_message(serde_json::json!({
+                "character_id": "testcharacter",
+                "session_id": &session_id,
+                "role": "user",
+                "content": format!("Msg {}", i)
+            }))
+            .await
+            .unwrap();
     }
 
     let rollback_args = serde_json::json!({
@@ -148,7 +157,10 @@ async fn test_seal_volume_and_rollback() {
         "session_id": &session_id,
         "n": 2
     });
-    let result = server.handle_rollback_messages(rollback_args).await.unwrap();
+    let result = server
+        .handle_rollback_messages(rollback_args)
+        .await
+        .unwrap();
     assert!(result.contains("Rolled back 2 message(s)"));
 
     // Should have 1 message left
@@ -170,7 +182,10 @@ async fn test_state_tracking() {
 
     let card = common::create_test_card();
     let png_base64 = common::card_to_base64(&card);
-    server.handle_import_card(serde_json::json!({"png_base64": png_base64})).await.unwrap();
+    server
+        .handle_import_card(serde_json::json!({"png_base64": png_base64}))
+        .await
+        .unwrap();
 
     // Update state
     let state_args = serde_json::json!({
@@ -199,7 +214,10 @@ async fn test_lorebook() {
 
     let card = common::create_test_card();
     let png_base64 = common::card_to_base64(&card);
-    server.handle_import_card(serde_json::json!({"png_base64": png_base64})).await.unwrap();
+    server
+        .handle_import_card(serde_json::json!({"png_base64": png_base64}))
+        .await
+        .unwrap();
 
     // Update lorebook
     let entries = serde_json::json!({
@@ -243,7 +261,10 @@ async fn test_analyze_card() {
 
     let card = common::create_test_card();
     let png_base64 = common::card_to_base64(&card);
-    server.handle_import_card(serde_json::json!({"png_base64": png_base64})).await.unwrap();
+    server
+        .handle_import_card(serde_json::json!({"png_base64": png_base64}))
+        .await
+        .unwrap();
 
     // Analyze at tier 2
     let analyze_args = serde_json::json!({
@@ -263,13 +284,19 @@ async fn test_decompose_character() {
 
     let card = common::create_test_card();
     let png_base64 = common::card_to_base64(&card);
-    server.handle_import_card(serde_json::json!({"png_base64": png_base64})).await.unwrap();
+    server
+        .handle_import_card(serde_json::json!({"png_base64": png_base64}))
+        .await
+        .unwrap();
 
     let decompose_args = serde_json::json!({
         "character_id": "testcharacter",
         "target_dir": "./test_decomposed"
     });
-    let result = server.handle_decompose_character(decompose_args).await.unwrap();
+    let result = server
+        .handle_decompose_character(decompose_args)
+        .await
+        .unwrap();
     assert!(result.contains("decomposed successfully"));
     // The summary reports a file count; the named files land on disk under
     // {target_dir}/characters/{id}/.

@@ -7,8 +7,12 @@
 //! AIRP does not call AI APIs, does not perform reasoning, and does
 //! not enforce any workflow. It is a toolbox, not an instruction manual.
 
+// `collapsible_if` is a style lint; its let-chain rewrites trade readability
+// for brevity. Allowed crate-wide; every other clippy lint stays enforced.
+#![allow(clippy::collapsible_if)]
+
 pub mod error;
+pub mod mcp;
 pub mod models;
 pub mod storage;
-pub mod mcp;
 pub mod transport;

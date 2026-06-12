@@ -1,9 +1,9 @@
 //! MCP Resource handlers
 
+use super::AirpMcpServer;
 use crate::error::Result;
 use crate::models::*;
 use crate::storage::*;
-use super::AirpMcpServer;
 
 impl AirpMcpServer {
     pub async fn dispatch_resource(&self, uri: &str) -> Result<String> {
@@ -20,13 +20,13 @@ impl AirpMcpServer {
         if uri == "airp://characters" {
             return self.read_characters_list().await;
         }
-        
+
         if let Some(rest) = uri.strip_prefix("airp://characters/") {
             let parts: Vec<&str> = rest.split('/').collect();
             if parts.len() >= 2 {
                 let character_id = parts[0];
                 let resource_type = parts[1];
-                
+
                 return match resource_type {
                     "card" => self.read_character_card(character_id).await,
                     "greetings" => self.read_character_greetings(character_id).await,
@@ -36,25 +36,25 @@ impl AirpMcpServer {
                     "state" if parts.len() >= 3 && parts[2] == "live" => {
                         self.read_character_live_state(character_id).await
                     }
-                    "memory" if parts.len() >= 3 => {
-                        match parts[2] {
-                            "current" => self.read_character_memory(character_id).await,
-                            "index" => self.read_memory_index(character_id).await,
-                            "volumes" if parts.len() >= 4 => {
-                                self.read_volume(character_id, parts[3]).await
-                            }
-                            _ => Err(crate::error::AirpError::Validation(
-                                format!("Unknown memory resource: {}", uri)
-                            )),
+                    "memory" if parts.len() >= 3 => match parts[2] {
+                        "current" => self.read_character_memory(character_id).await,
+                        "index" => self.read_memory_index(character_id).await,
+                        "volumes" if parts.len() >= 4 => {
+                            self.read_volume(character_id, parts[3]).await
                         }
-                    }
-                    _ => Err(crate::error::AirpError::Validation(
-                        format!("Unknown resource: {}", uri)
-                    )),
+                        _ => Err(crate::error::AirpError::Validation(format!(
+                            "Unknown memory resource: {}",
+                            uri
+                        ))),
+                    },
+                    _ => Err(crate::error::AirpError::Validation(format!(
+                        "Unknown resource: {}",
+                        uri
+                    ))),
                 };
             }
         }
-        
+
         // airp://presets (list)
         if uri == "airp://presets" {
             return self.read_presets_list().await;
@@ -105,14 +105,16 @@ impl AirpMcpServer {
             if let Some(rel) = sub.strip_prefix("data/") {
                 return self.read_plugin_data(pname, rel).await;
             }
-            return Err(crate::error::AirpError::Validation(
-                format!("Unknown plugin sub-resource: {}", uri)
-            ));
+            return Err(crate::error::AirpError::Validation(format!(
+                "Unknown plugin sub-resource: {}",
+                uri
+            )));
         }
 
-        Err(crate::error::AirpError::Validation(
-            format!("Invalid resource URI: {}", uri)
-        ))
+        Err(crate::error::AirpError::Validation(format!(
+            "Invalid resource URI: {}",
+            uri
+        )))
     }
 
     // ── M_PLUGIN_DATA resource readers ────────────────────────────────────
@@ -161,17 +163,22 @@ impl AirpMcpServer {
         crate::storage::validate_id_segment(plugin_name)?;
         let dir = self.storage.plugin_dir(plugin_name);
         if !dir.exists() {
-            return Err(crate::error::AirpError::Validation(
-                format!("plugin `{}` does not exist", plugin_name)));
+            return Err(crate::error::AirpError::Validation(format!(
+                "plugin `{}` does not exist",
+                plugin_name
+            )));
         }
         let target = self.storage.safe_resolve_for_write(&dir, rel_path)?;
         if !target.is_file() {
-            return Err(crate::error::AirpError::Validation(
-                format!("file not found: plugins/{}/{}", plugin_name, rel_path)));
+            return Err(crate::error::AirpError::Validation(format!(
+                "file not found: plugins/{}/{}",
+                plugin_name, rel_path
+            )));
         }
         let content = tokio::fs::read_to_string(&target).await.map_err(|_| {
             crate::error::AirpError::Validation(
-                "file is not valid UTF-8; use plugin_blob_read tool for binary".into())
+                "file is not valid UTF-8; use plugin_blob_read tool for binary".into(),
+            )
         })?;
         // Cap content returned into the model context. Mirrors read_preset_raw:
         // truncate oversized files with a [PARTIAL: ...] marker instead of
@@ -184,40 +191,46 @@ impl AirpMcpServer {
             }
             Ok(format!(
                 "[PARTIAL: total={}, offset=0, limit={} — file exceeds single-read cap; use plugin_blob_read or read from filesystem directly for full content]\n{}",
-                content.len(), end, &content[..end]))
+                content.len(),
+                end,
+                &content[..end]
+            ))
         } else {
             Ok(content)
         }
     }
-    
+
     async fn read_characters_list(&self) -> Result<String> {
         let store = CharacterStore::new(&self.storage);
         let characters = store.list().await?;
-        
-        let list: Vec<serde_json::Value> = characters.iter()
-            .map(|c| serde_json::json!({
-                "id": c.id.as_ref(),
-                "name": c.card.name,
-                "description": c.card.description.chars().take(100).collect::<String>(),
-            }))
+
+        let list: Vec<serde_json::Value> = characters
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id.as_ref(),
+                    "name": c.card.name,
+                    "description": c.card.description.chars().take(100).collect::<String>(),
+                })
+            })
             .collect();
-        
+
         serde_json::to_string_pretty(&list).map_err(Into::into)
     }
-    
+
     async fn read_character_card(&self, character_id: &str) -> Result<String> {
         let id = CharacterId::new(character_id)?;
         let store = CharacterStore::new(&self.storage);
         let character = store.get(&id).await?;
-        
+
         serde_json::to_string_pretty(&character.card).map_err(Into::into)
     }
-    
+
     async fn read_character_greetings(&self, character_id: &str) -> Result<String> {
         let id = CharacterId::new(character_id)?;
         let store = CharacterStore::new(&self.storage);
         let character = store.get(&id).await?;
-        
+
         let greetings = serde_json::json!({
             "first_mes": character.card.first_mes,
             "alternate_greetings": character.card.extensions
@@ -226,102 +239,103 @@ impl AirpMcpServer {
                 .cloned()
                 .unwrap_or(serde_json::Value::Array(vec![])),
         });
-        
+
         serde_json::to_string_pretty(&greetings).map_err(Into::into)
     }
-    
+
     async fn read_character_lorebook(&self, character_id: &str) -> Result<String> {
         let id = CharacterId::new(character_id)?;
         let store = CharacterStore::new(&self.storage);
         let lorebook = store.get_lorebook(&id).await?;
-        
+
         serde_json::to_string_pretty(&lorebook).map_err(Into::into)
     }
-    
+
     async fn read_character_live_state(&self, character_id: &str) -> Result<String> {
         let id = CharacterId::new(character_id)?;
         let store = CharacterStore::new(&self.storage);
         let state = store.get_live_state(&id).await?;
-        
+
         serde_json::to_string_pretty(&state).map_err(Into::into)
     }
-    
+
     async fn read_character_memory(&self, character_id: &str) -> Result<String> {
         let id = CharacterId::new(character_id)?;
         let _store = CharacterStore::new(&self.storage);
 
         // Get all sessions and recent context
         let sessions = SessionStore::new(&self.storage).list(&id).await?;
-        
+
         let memory = serde_json::json!({
             "character_id": character_id,
             "session_count": sessions.len(),
             "note": "Use get_recent_context tool to retrieve actual conversation history",
         });
-        
+
         serde_json::to_string_pretty(&memory).map_err(Into::into)
     }
-    
+
     async fn read_preset(&self, preset_id: &str) -> Result<String> {
         let id = PresetId::new(preset_id)?;
         let store = PresetStore::new(&self.storage);
         let preset = store.get(&id).await?;
-        
+
         serde_json::to_string_pretty(&preset).map_err(Into::into)
     }
-    
+
     async fn read_memory_index(&self, character_id: &str) -> Result<String> {
         let id = CharacterId::new(character_id)?;
         let char_dir = self.storage.character_dir(&id);
         let index_path = char_dir.join("memory").join("index.md");
-        
+
         if !index_path.exists() {
             return Ok("# Memory Index\n\nNo volumes archived yet.".to_string());
         }
-        
+
         let content = tokio::fs::read_to_string(&index_path).await?;
         Ok(content)
     }
-    
+
     async fn read_volume(&self, character_id: &str, volume_id: &str) -> Result<String> {
         let id = CharacterId::new(character_id)?;
         let char_dir = self.storage.character_dir(&id);
-        
+
         // volume_id can be "latest" or a specific filename
         let volume_path = if volume_id == "latest" {
             let volumes_dir = char_dir.join("memory").join("volumes");
             if !volumes_dir.exists() {
                 return Err(crate::error::AirpError::Validation(
-                    "No volumes found".to_string()
+                    "No volumes found".to_string(),
                 ));
             }
-            
+
             // Find the latest volume by filename (vol_YYYYMMDD_HHMMSS.md)
             let mut entries = tokio::fs::read_dir(&volumes_dir).await?;
             let mut latest: Option<std::path::PathBuf> = None;
-            
+
             while let Some(entry) = entries.next_entry().await? {
                 let path = entry.path();
-                if path.extension().map_or(false, |e| e == "md") {
+                if path.extension().is_some_and(|e| e == "md") {
                     if latest.is_none() || path > latest.clone().unwrap() {
                         latest = Some(path);
                     }
                 }
             }
-            
-            latest.ok_or_else(|| crate::error::AirpError::Validation(
-                "No volumes found".to_string()
-            ))?
+
+            latest.ok_or_else(|| {
+                crate::error::AirpError::Validation("No volumes found".to_string())
+            })?
         } else {
             char_dir.join("memory").join("volumes").join(volume_id)
         };
-        
+
         if !volume_path.exists() {
-            return Err(crate::error::AirpError::Validation(
-                format!("Volume not found: {}", volume_id)
-            ));
+            return Err(crate::error::AirpError::Validation(format!(
+                "Volume not found: {}",
+                volume_id
+            )));
         }
-        
+
         let content = tokio::fs::read_to_string(&volume_path).await?;
         Ok(content)
     }
@@ -367,7 +381,9 @@ impl AirpMcpServer {
 
         let path = self.storage.preset_json_path(preset_id);
         if !path.exists() {
-            return Err(crate::error::AirpError::PresetNotFound(preset_id.to_string()));
+            return Err(crate::error::AirpError::PresetNotFound(
+                preset_id.to_string(),
+            ));
         }
 
         let raw = tokio::fs::read_to_string(&path).await?;

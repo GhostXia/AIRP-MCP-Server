@@ -1,23 +1,20 @@
 //! MCP Server implementation for AIRP
 
+use rmcp::{handler::server::ServerHandler, model::*};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use rmcp::{
-    handler::server::ServerHandler,
-    model::*,
-};
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 use crate::error::{AirpError, Result};
 use crate::storage::*;
 
-pub mod tools;
-pub mod resources;
-pub mod prompts;
 pub mod decompose;
 pub mod preset_regex;
+pub mod prompts;
+pub mod resources;
+pub mod tools;
 
-pub use decompose::{CharacterDecomposer, PresetDecomposer, DecomposeConfig, DecomposeResult};
+pub use decompose::{CharacterDecomposer, DecomposeConfig, DecomposeResult, PresetDecomposer};
 
 /// Single-read cap (bytes) for any tool/resource that returns file content into
 /// the model context. Guards against a plugin storing a huge blob/JSON that,
@@ -53,7 +50,12 @@ impl AirpMcpServer {
 }
 
 fn to_schema(value: serde_json::Value) -> Arc<serde_json::Map<String, serde_json::Value>> {
-    Arc::new(value.as_object().expect("schema must be JSON object").clone())
+    Arc::new(
+        value
+            .as_object()
+            .expect("schema must be JSON object")
+            .clone(),
+    )
 }
 
 fn value_from_map(map: serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
@@ -81,7 +83,8 @@ impl ServerHandler for AirpMcpServer {
                 - Chat sessions (create, append messages, retrieve context)\n\
                 - World books / Lorebooks (keyword-triggered knowledge)\n\
                 - AI presets (system prompts, regex filters)\n\
-                - Live state tracking (HP/MP/EXP etc.)".into(),
+                - Live state tracking (HP/MP/EXP etc.)"
+                    .into(),
             );
             imp.icons = None;
             imp.website_url = None;
@@ -116,7 +119,8 @@ impl ServerHandler for AirpMcpServer {
             don't preload the whole book. Why: entries are keyword-gated by \
             design. Cost if skipped: wasted tokens AND the character 'knows' \
             things it shouldn't, breaking immersion.\n\n\
-            Use list_tools to see available operations.".to_string(),
+            Use list_tools to see available operations."
+                .to_string(),
         );
         info
     }
@@ -226,7 +230,10 @@ impl ServerHandler for AirpMcpServer {
 
         match result {
             Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("Error: {}", e))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Error: {}",
+                e
+            ))])),
         }
     }
 
@@ -238,19 +245,24 @@ impl ServerHandler for AirpMcpServer {
         Ok(ListResourcesResult {
             meta: None,
             next_cursor: None,
-            resources: vec![Resource {
-                raw: RawResource::new("airp://characters", "Characters List"),
-                annotations: None,
-            }, Resource {
-                raw: RawResource::new("airp://presets", "Presets List"),
-                annotations: None,
-            }, Resource {
-                raw: RawResource::new("airp://scenes", "Scenes List"),
-                annotations: None,
-            }, Resource {
-                raw: RawResource::new("airp://plugins", "Plugin Namespaces List"),
-                annotations: None,
-            }],
+            resources: vec![
+                Resource {
+                    raw: RawResource::new("airp://characters", "Characters List"),
+                    annotations: None,
+                },
+                Resource {
+                    raw: RawResource::new("airp://presets", "Presets List"),
+                    annotations: None,
+                },
+                Resource {
+                    raw: RawResource::new("airp://scenes", "Scenes List"),
+                    annotations: None,
+                },
+                Resource {
+                    raw: RawResource::new("airp://plugins", "Plugin Namespaces List"),
+                    annotations: None,
+                },
+            ],
         })
     }
 
@@ -261,20 +273,41 @@ impl ServerHandler for AirpMcpServer {
     ) -> std::result::Result<ListResourceTemplatesResult, ErrorData> {
         let templates = vec![
             ("airp://characters/{character_id}/card", "Character Card"),
-            ("airp://characters/{character_id}/greetings", "Character Greetings"),
-            ("airp://characters/{character_id}/world/lorebook", "Character Lorebook"),
+            (
+                "airp://characters/{character_id}/greetings",
+                "Character Greetings",
+            ),
+            (
+                "airp://characters/{character_id}/world/lorebook",
+                "Character Lorebook",
+            ),
             ("airp://characters/{character_id}/state/live", "Live State"),
-            ("airp://characters/{character_id}/memory/current", "Current Memory"),
-            ("airp://characters/{character_id}/memory/index", "Memory Index"),
-            ("airp://characters/{character_id}/memory/volumes/{volume_id}", "Archived Volume"),
+            (
+                "airp://characters/{character_id}/memory/current",
+                "Current Memory",
+            ),
+            (
+                "airp://characters/{character_id}/memory/index",
+                "Memory Index",
+            ),
+            (
+                "airp://characters/{character_id}/memory/volumes/{volume_id}",
+                "Archived Volume",
+            ),
             ("airp://presets/{preset_id}", "AI Preset"),
             ("airp://presets/{preset_id}/raw", "Preset Raw JSON"),
             ("airp://presets/{preset_id}/artifacts", "Preset Artifacts"),
             ("airp://presets/{preset_id}/regex", "Preset Regex Scripts"),
             ("airp://scenes/{scene_id}", "Scene Configuration"),
-            ("airp://gating/{character_id}/checkpoints", "Gating Checkpoints"),
+            (
+                "airp://gating/{character_id}/checkpoints",
+                "Gating Checkpoints",
+            ),
             ("airp://plugins/{plugin_name}/files", "Plugin Files List"),
-            ("airp://plugins/{plugin_name}/data/{path}", "Plugin Data File"),
+            (
+                "airp://plugins/{plugin_name}/data/{path}",
+                "Plugin Data File",
+            ),
         ];
 
         Ok(ListResourceTemplatesResult {
@@ -301,12 +334,14 @@ impl ServerHandler for AirpMcpServer {
         let result = self.dispatch_resource(uri).await;
 
         match result {
-            Ok(content) => Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
-                uri: request.uri,
-                mime_type: Some("application/json".to_string()),
-                text: content,
-                meta: None,
-            }])),
+            Ok(content) => Ok(ReadResourceResult::new(vec![
+                ResourceContents::TextResourceContents {
+                    uri: request.uri,
+                    mime_type: Some("application/json".to_string()),
+                    text: content,
+                    meta: None,
+                },
+            ])),
             Err(e) => Err(ErrorData::invalid_request(
                 format!("Failed to read resource: {}", e),
                 None,
@@ -360,48 +395,94 @@ impl ServerHandler for AirpMcpServer {
             meta: None,
             next_cursor: None,
             prompts: vec![
-                Prompt::new("build_system_prompt", Some("Build system prompt for a character"), Some(vec![
-                    arg("character_id", "Character ID", true),
-                    arg("preset_id", "Optional preset ID", false),
-                ])),
-                Prompt::new("filter_text", Some("Apply regex filters to text"), Some(vec![
-                    arg("text", "Text to filter", true),
-                    arg("preset_id", "Preset with regex scripts", true),
-                ])),
-                Prompt::new("state_update_instruction", Some("Instruction for AI to update state"), None),
-                Prompt::new("prompt_decompose_character", Some("Guide for decomposing character card into Markdown"), Some(vec![
-                    arg("character_id", "Character ID", true),
-                    arg("target_dir", "Target directory", true),
-                ])),
-                Prompt::new("prompt_enhance_analysis", Some("Guide for enhancing decomposed character analysis"), Some(vec![
-                    arg("character_id", "Character ID", true),
-                    arg("target_dir", "Decomposed files directory", true),
-                ])),
-                Prompt::new("prompt_build_session_context", Some("Guide for building session context from decomposed files"), Some(vec![
-                    arg("character_id", "Character ID", true),
-                    arg("session_id", "Session ID", true),
-                    arg("decomposed_dir", "Decomposed files directory", true),
-                ])),
-                Prompt::new("seal_volume", Some("Instruction for sealing/archiving a volume"), Some(vec![
-                    arg("character_id", "Character ID", true),
-                    arg("session_id", "Session ID", true),
-                ])),
-                Prompt::new("analyze_preset", Some("Agent-driven preset analysis workflow"), Some(vec![
-                    arg("preset_id", "Imported preset ID", true),
-                ])),
-                Prompt::new("tune_preset", Some("Hot-tune a preset's style from user feedback (best-effort, not guaranteed)"), Some(vec![
-                    arg("preset_id", "Preset ID to tune", true),
-                    arg("feedback", "User's complaint about the output style, e.g. 'too stiff'", false),
-                ])),
-                Prompt::new("build_scene", Some("Multi-character scene assembly guide"), Some(vec![
-                    arg("scene_id", "Scene ID", true),
-                ])),
-                Prompt::new("validate_card", Some("Validate character card for unknown/malformed content"), Some(vec![
-                    arg("character_id", "Character ID to validate", true),
-                ])),
-                Prompt::new("validate_preset", Some("Validate preset for broken regex/unknown macros/anomalies"), Some(vec![
-                    arg("preset_id", "Preset ID to validate", true),
-                ])),
+                Prompt::new(
+                    "build_system_prompt",
+                    Some("Build system prompt for a character"),
+                    Some(vec![
+                        arg("character_id", "Character ID", true),
+                        arg("preset_id", "Optional preset ID", false),
+                    ]),
+                ),
+                Prompt::new(
+                    "filter_text",
+                    Some("Apply regex filters to text"),
+                    Some(vec![
+                        arg("text", "Text to filter", true),
+                        arg("preset_id", "Preset with regex scripts", true),
+                    ]),
+                ),
+                Prompt::new(
+                    "state_update_instruction",
+                    Some("Instruction for AI to update state"),
+                    None,
+                ),
+                Prompt::new(
+                    "prompt_decompose_character",
+                    Some("Guide for decomposing character card into Markdown"),
+                    Some(vec![
+                        arg("character_id", "Character ID", true),
+                        arg("target_dir", "Target directory", true),
+                    ]),
+                ),
+                Prompt::new(
+                    "prompt_enhance_analysis",
+                    Some("Guide for enhancing decomposed character analysis"),
+                    Some(vec![
+                        arg("character_id", "Character ID", true),
+                        arg("target_dir", "Decomposed files directory", true),
+                    ]),
+                ),
+                Prompt::new(
+                    "prompt_build_session_context",
+                    Some("Guide for building session context from decomposed files"),
+                    Some(vec![
+                        arg("character_id", "Character ID", true),
+                        arg("session_id", "Session ID", true),
+                        arg("decomposed_dir", "Decomposed files directory", true),
+                    ]),
+                ),
+                Prompt::new(
+                    "seal_volume",
+                    Some("Instruction for sealing/archiving a volume"),
+                    Some(vec![
+                        arg("character_id", "Character ID", true),
+                        arg("session_id", "Session ID", true),
+                    ]),
+                ),
+                Prompt::new(
+                    "analyze_preset",
+                    Some("Agent-driven preset analysis workflow"),
+                    Some(vec![arg("preset_id", "Imported preset ID", true)]),
+                ),
+                Prompt::new(
+                    "tune_preset",
+                    Some(
+                        "Hot-tune a preset's style from user feedback (best-effort, not guaranteed)",
+                    ),
+                    Some(vec![
+                        arg("preset_id", "Preset ID to tune", true),
+                        arg(
+                            "feedback",
+                            "User's complaint about the output style, e.g. 'too stiff'",
+                            false,
+                        ),
+                    ]),
+                ),
+                Prompt::new(
+                    "build_scene",
+                    Some("Multi-character scene assembly guide"),
+                    Some(vec![arg("scene_id", "Scene ID", true)]),
+                ),
+                Prompt::new(
+                    "validate_card",
+                    Some("Validate character card for unknown/malformed content"),
+                    Some(vec![arg("character_id", "Character ID to validate", true)]),
+                ),
+                Prompt::new(
+                    "validate_preset",
+                    Some("Validate preset for broken regex/unknown macros/anomalies"),
+                    Some(vec![arg("preset_id", "Preset ID to validate", true)]),
+                ),
             ],
         })
     }
@@ -420,7 +501,9 @@ impl ServerHandler for AirpMcpServer {
             "state_update_instruction" => self.state_update_instruction_messages().await,
             "prompt_decompose_character" => self.prompt_decompose_character_messages(args).await,
             "prompt_enhance_analysis" => self.prompt_enhance_analysis_messages(args).await,
-            "prompt_build_session_context" => self.prompt_build_session_context_messages(args).await,
+            "prompt_build_session_context" => {
+                self.prompt_build_session_context_messages(args).await
+            }
             "seal_volume" => self.seal_volume_messages(args).await,
             "analyze_preset" => self.analyze_preset_messages(args).await,
             "tune_preset" => self.tune_preset_messages(args).await,
@@ -755,7 +838,11 @@ fn create_scene_tool() -> Tool {
 }
 
 fn list_scenes_tool() -> Tool {
-    Tool::new("list_scenes", "List all created scenes", to_schema(serde_json::json!({"type": "object", "properties": {}})))
+    Tool::new(
+        "list_scenes",
+        "List all created scenes",
+        to_schema(serde_json::json!({"type": "object", "properties": {}})),
+    )
 }
 
 fn get_scene_tool() -> Tool {

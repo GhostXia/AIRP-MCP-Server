@@ -9,12 +9,12 @@ use crate::error::{AirpError, Result};
 use crate::models::*;
 
 pub mod character_store;
-pub mod session_store;
 pub mod preset_store;
+pub mod session_store;
 
 pub use character_store::CharacterStore;
-pub use session_store::SessionStore;
 pub use preset_store::PresetStore;
+pub use session_store::SessionStore;
 
 /// Data storage manager
 #[derive(Debug, Clone)]
@@ -29,11 +29,7 @@ impl Storage {
     }
 
     pub async fn init(&self) -> Result<()> {
-        let dirs = [
-            self.characters_dir(),
-            self.presets_dir(),
-            self.scenes_dir(),
-        ];
+        let dirs = [self.characters_dir(), self.presets_dir(), self.scenes_dir()];
 
         for dir in &dirs {
             fs::create_dir_all(dir).await?;
@@ -79,7 +75,12 @@ impl Storage {
         let mut result = Vec::new();
         let mut entries = fs::read_dir(&scenes_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
-            if entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
+            if entry
+                .file_type()
+                .await
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false)
+            {
                 let p = entry.path();
                 if p.join("scene.json").exists() {
                     if let Some(name) = entry.file_name().to_str() {
@@ -108,7 +109,10 @@ impl Storage {
     }
 
     pub fn preset_json_path(&self, preset_id: &str) -> PathBuf {
-        self.data_root.join("presets").join(preset_id).join("preset.json")
+        self.data_root
+            .join("presets")
+            .join(preset_id)
+            .join("preset.json")
     }
 
     pub fn preset_regex_dir(&self, preset_id: &str) -> PathBuf {
@@ -134,7 +138,10 @@ impl Storage {
                     seen.insert(name);
                 }
             } else if ft.is_file() {
-                if let Some(stem) = name.strip_suffix(".json").or_else(|| name.strip_suffix(".md")) {
+                if let Some(stem) = name
+                    .strip_suffix(".json")
+                    .or_else(|| name.strip_suffix(".md"))
+                {
                     seen.insert(stem.to_string());
                 }
             }
@@ -194,28 +201,42 @@ impl Storage {
             return Err(AirpError::Validation("path is empty".into()));
         }
 
-        if trimmed.starts_with('/') || trimmed.starts_with('\\')
+        if trimmed.starts_with('/')
+            || trimmed.starts_with('\\')
             || (trimmed.len() >= 2 && trimmed.as_bytes()[1] == b':')
         {
-            return Err(AirpError::Validation(format!("absolute path rejected: {}", user_path)));
+            return Err(AirpError::Validation(format!(
+                "absolute path rejected: {}",
+                user_path
+            )));
         }
 
         if trimmed.contains('\0') {
             return Err(AirpError::Validation("path contains null byte".into()));
         }
 
-        let canon_base = base_dir.canonicalize().unwrap_or_else(|_| base_dir.to_path_buf());
+        let canon_base = base_dir
+            .canonicalize()
+            .unwrap_or_else(|_| base_dir.to_path_buf());
         let mut stack: Vec<std::ffi::OsString> = Vec::new();
         for comp in Path::new(trimmed).components() {
             match comp {
                 std::path::Component::CurDir => {}
                 std::path::Component::ParentDir => {
                     if stack.pop().is_none() {
-                        return Err(AirpError::Validation(format!("path escape attempt: {}", user_path)));
+                        return Err(AirpError::Validation(format!(
+                            "path escape attempt: {}",
+                            user_path
+                        )));
                     }
                 }
                 std::path::Component::Normal(s) => stack.push(s.to_owned()),
-                _ => return Err(AirpError::Validation(format!("illegal path component: {}", user_path))),
+                _ => {
+                    return Err(AirpError::Validation(format!(
+                        "illegal path component: {}",
+                        user_path
+                    )));
+                }
             }
         }
 
@@ -225,7 +246,10 @@ impl Storage {
 
         let resolved = stack.iter().fold(canon_base.clone(), |acc, c| acc.join(c));
         if !resolved.starts_with(&canon_base) {
-            return Err(AirpError::Validation(format!("path escape attempt: {}", user_path)));
+            return Err(AirpError::Validation(format!(
+                "path escape attempt: {}",
+                user_path
+            )));
         }
 
         // Defense-in-depth: refuse to resolve onto an existing symlink. The
@@ -236,7 +260,9 @@ impl Storage {
         if let Ok(meta) = std::fs::symlink_metadata(&resolved) {
             if meta.file_type().is_symlink() {
                 return Err(AirpError::Validation(format!(
-                    "refusing to resolve through a symlink: {}", user_path)));
+                    "refusing to resolve through a symlink: {}",
+                    user_path
+                )));
             }
         }
 
@@ -264,12 +290,18 @@ pub fn validate_id_segment(id: &str) -> Result<()> {
         return Err(AirpError::InvalidId(format!("illegal ID: {}", id)));
     }
     if id.starts_with('.') {
-        return Err(AirpError::InvalidId(format!("ID must not start with dot: {}", id)));
+        return Err(AirpError::InvalidId(format!(
+            "ID must not start with dot: {}",
+            id
+        )));
     }
     for c in id.chars() {
         match c {
             '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => {
-                return Err(AirpError::InvalidId(format!("ID contains illegal char {:?}: {}", c, id)));
+                return Err(AirpError::InvalidId(format!(
+                    "ID contains illegal char {:?}: {}",
+                    c, id
+                )));
             }
             _ => {}
         }

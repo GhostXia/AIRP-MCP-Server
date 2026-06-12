@@ -1,10 +1,14 @@
 //! Common test utilities
+//!
+//! Shared by multiple test targets; each uses only part of it, so unused
+//! helpers/fields are expected per-target — silence dead_code / unused_imports.
+#![allow(dead_code, unused_imports)]
 
+use airp_mcp_server::mcp::AirpMcpServer;
+use airp_mcp_server::storage::Storage;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
-use airp_mcp_server::mcp::AirpMcpServer;
-use airp_mcp_server::storage::Storage;
 
 pub struct TestContext {
     pub data_dir: PathBuf,
