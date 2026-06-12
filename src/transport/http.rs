@@ -227,4 +227,108 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(resp.headers().get("mcp-session-id").is_some());
     }
+
+    /// Pull the JSON-RPC payload out of a `/mcp/v1` response. rmcp answers POSTs
+    /// with `text/event-stream`, so the JSON rides in an SSE `data:` frame; fall
+    /// back to the whole body for plain `application/json`.
+    async fn read_rpc_json(resp: Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let payload = text
+            .lines()
+            .find_map(|l| l.strip_prefix("data:").map(str::trim))
+            .unwrap_or_else(|| text.trim());
+        serde_json::from_str(payload)
+            .unwrap_or_else(|e| panic!("response body is not JSON-RPC ({e}): {text}"))
+    }
+
+    /// A post-initialize request carrying the negotiated session id and protocol
+    /// version (both required by rmcp once the session exists).
+    fn mcp_post(method: &str, id: Option<u32>, session: &str, protocol: &str) -> Request<Body> {
+        let mut msg = serde_json::json!({ "jsonrpc": "2.0", "method": method });
+        if let Some(id) = id {
+            msg["id"] = id.into();
+        }
+        Request::builder()
+            .method("POST")
+            .uri("/mcp/v1")
+            .header(header::HOST, "localhost")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("mcp-session-id", session)
+            .header("mcp-protocol-version", protocol)
+            .body(Body::from(msg.to_string()))
+            .unwrap()
+    }
+
+    /// The real handshake, decoded end to end: initialize result body (R1/R5),
+    /// session lifecycle (R2/R3), and the full tool registry served over HTTP.
+    /// Unlike the status+header checks above, this asserts the actual JSON-RPC
+    /// payloads, so it fails if rmcp returns 200 with an error frame.
+    #[tokio::test]
+    async fn full_handshake_lists_all_38_tools() {
+        let (app, _dir) = test_app(None).await;
+
+        // 1. initialize -> decode the result, not just the status line.
+        let resp = app.clone().oneshot(initialize_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let session = resp
+            .headers()
+            .get("mcp-session-id")
+            .expect("initialize must mint a session id (R3)")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let init = read_rpc_json(resp).await;
+        assert!(init.get("error").is_none(), "initialize errored: {init}");
+        assert_eq!(
+            init["result"]["serverInfo"]["name"], "airp-mcp-server",
+            "initialize result must carry our serverInfo (R1)"
+        );
+        // Echo back whatever version the server negotiated, rather than guessing.
+        let protocol = init["result"]["protocolVersion"]
+            .as_str()
+            .expect("result must carry a protocolVersion (R5)")
+            .to_string();
+
+        // 2. notifications/initialized completes the lifecycle (R2).
+        let resp = app
+            .clone()
+            .oneshot(mcp_post(
+                "notifications/initialized",
+                None,
+                &session,
+                &protocol,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "initialized notification rejected: {}",
+            resp.status()
+        );
+
+        // 3. tools/list over the live session -> assert the whole registry (R2).
+        let resp = app
+            .clone()
+            .oneshot(mcp_post("tools/list", Some(2), &session, &protocol))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let listed = read_rpc_json(resp).await;
+        assert!(
+            listed.get("error").is_none(),
+            "tools/list errored: {listed}"
+        );
+        let tools = listed["result"]["tools"]
+            .as_array()
+            .expect("tools/list must return a tools array");
+        assert_eq!(tools.len(), 38, "expected all 38 tools over HTTP");
+        assert!(
+            tools.iter().any(|t| t["name"] == "list_characters"),
+            "registry must include list_characters"
+        );
+    }
 }
