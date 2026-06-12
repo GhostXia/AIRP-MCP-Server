@@ -58,3 +58,5 @@ base64 = "0.22"
 tempfile = "3.9"
 wiremock = "0.6"
 flate2 = "1.0"
+# ServiceExt::oneshot for in-process HTTP transport tests
+tower = { version = "0.5", features = ["util"] }

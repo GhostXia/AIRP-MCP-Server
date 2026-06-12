@@ -56,15 +56,30 @@ pub async fn run_http_server(bind: &str, data_dir: &str) -> Result<()> {
         (None, true) => {}
     }
 
-    // rmcp Streamable HTTP service. The factory builds a fresh MCP router per
-    // session; all sessions share the same Storage (AirpMcpServer is Clone over
-    // Arc), so data is consistent across sessions.
+    let app = build_router(server, auth_token);
+
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    info!(
+        "AIRP MCP listening on {} (Streamable HTTP at /mcp/v1)",
+        bind
+    );
+
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Assemble the axum app: rmcp Streamable HTTP at `/mcp/v1` (+ bearer auth +
+/// CORS) and an open `/health`. Extracted so tests can drive it in-process via
+/// `tower::ServiceExt::oneshot` without binding a socket.
+pub(crate) fn build_router(server: AirpMcpServer, auth_token: Option<String>) -> AxumRouter {
+    // The factory builds a fresh MCP router per session; all sessions share the
+    // same Storage (AirpMcpServer is Clone over Arc), so data stays consistent.
     let mcp_service = StreamableHttpService::new(
         move || Ok(McpRouter::new(server.clone())),
         Arc::new(LocalSessionManager::default()),
         // Allow non-loopback Host headers: LAN deployment (PC backend + phone on
-        // the same wifi) is a supported use. The bearer token + "trust your LAN"
-        // is the security model; rmcp's default loopback-only Host check would
+        // the same wifi) is a supported use. Bearer token + "trust your LAN" is
+        // the security model; rmcp's default loopback-only Host check would
         // otherwise reject LAN clients (DNS-rebinding guard).
         StreamableHttpServerConfig::default().disable_allowed_hosts(),
     );
@@ -83,21 +98,12 @@ pub async fn run_http_server(bind: &str, data_dir: &str) -> Result<()> {
             header::HeaderName::from_static("mcp-protocol-version"),
         ]);
 
-    let app = AxumRouter::new()
+    AxumRouter::new()
         .route_service("/mcp/v1", mcp_service)
         // Auth applies only to routes defined above this layer; /health stays open.
         .route_layer(middleware::from_fn_with_state(auth, require_bearer_auth))
         .route("/health", get(health_check))
-        .layer(cors);
-
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    info!(
-        "AIRP MCP listening on {} (Streamable HTTP at /mcp/v1)",
-        bind
-    );
-
-    axum::serve(listener, app).await?;
-    Ok(())
+        .layer(cors)
 }
 
 async fn health_check() -> &'static str {
@@ -134,4 +140,91 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use tower::ServiceExt; // oneshot
+
+    async fn test_app(token: Option<&str>) -> (AxumRouter, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+        let server = AirpMcpServer::new(&path).unwrap();
+        server.init().await.unwrap();
+        (build_router(server, token.map(|t| t.to_string())), dir)
+    }
+
+    /// A spec-shaped `initialize` POST. Host header is required by rmcp's DNS-
+    /// rebinding guard even with allowed_hosts disabled; Accept must list both
+    /// json and event-stream.
+    fn initialize_request(token: Option<&str>) -> Request<Body> {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "airp-test", "version": "0" }
+            }
+        })
+        .to_string();
+        let mut b = Request::builder()
+            .method("POST")
+            .uri("/mcp/v1")
+            .header(header::HOST, "localhost")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(t) = token {
+            b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        b.body(Body::from(body)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn health_is_open_even_with_token() {
+        let (app, _dir) = test_app(Some("secret")).await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn mcp_rejects_missing_bearer_when_token_set() {
+        let (app, _dir) = test_app(Some("secret")).await;
+        let resp = app.oneshot(initialize_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn initialize_returns_session_id() {
+        let (app, _dir) = test_app(None).await; // no auth configured
+        let resp = app.oneshot(initialize_request(None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().get("mcp-session-id").is_some(),
+            "initialize response must carry Mcp-Session-Id (R3)"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_accepts_valid_bearer() {
+        let (app, _dir) = test_app(Some("secret")).await;
+        let resp = app
+            .oneshot(initialize_request(Some("secret")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get("mcp-session-id").is_some());
+    }
 }
