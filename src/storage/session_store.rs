@@ -81,18 +81,20 @@ impl<'a> SessionStore<'a> {
         })
     }
     
-    /// List sessions for a character
-    pub async fn list(&self, character_id: &CharacterId) -> Result<Vec<SessionMeta>> {
+    /// List sessions for a character, as (session_id, meta) pairs.
+    /// The id is the session directory name — it is NOT stored inside meta.json,
+    /// so callers that need the id must get it from here.
+    pub async fn list(&self, character_id: &CharacterId) -> Result<Vec<(String, SessionMeta)>> {
         let char_dir = self.storage.character_dir(character_id);
         let sessions_dir = char_dir.join("sessions");
-        
+
         if !sessions_dir.exists() {
             return Ok(vec![]);
         }
-        
+
         let mut entries = fs::read_dir(&sessions_dir).await?;
         let mut sessions = vec![];
-        
+
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.is_dir() {
@@ -100,13 +102,14 @@ impl<'a> SessionStore<'a> {
                 if meta_path.exists() {
                     if let Ok(json) = fs::read_to_string(&meta_path).await {
                         if let Ok(meta) = serde_json::from_str::<SessionMeta>(&json) {
-                            sessions.push(meta);
+                            let sid = entry.file_name().to_string_lossy().into_owned();
+                            sessions.push((sid, meta));
                         }
                     }
                 }
             }
         }
-        
+
         Ok(sessions)
     }
     

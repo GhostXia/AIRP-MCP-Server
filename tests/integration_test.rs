@@ -271,8 +271,11 @@ async fn test_decompose_character() {
     });
     let result = server.handle_decompose_character(decompose_args).await.unwrap();
     assert!(result.contains("decomposed successfully"));
-    assert!(result.contains("basic_info.md"));
-    assert!(result.contains("personality.md"));
+    // The summary reports a file count; the named files land on disk under
+    // {target_dir}/characters/{id}/.
+    let base = std::path::Path::new("./test_decomposed/characters/testcharacter");
+    assert!(base.join("basic_info.md").exists());
+    assert!(base.join("personality.md").exists());
 
     // Cleanup
     let _ = std::fs::remove_dir_all("./test_decomposed");
