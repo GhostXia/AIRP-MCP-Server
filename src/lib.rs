@@ -8,7 +8,7 @@
 //! not enforce any workflow. It is a toolbox, not an instruction manual.
 
 pub mod error;
+pub mod mcp;
 pub mod models;
 pub mod storage;
-pub mod mcp;
 pub mod transport;

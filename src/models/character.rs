@@ -54,26 +54,26 @@ impl CharacterCard {
     /// Extract system prompt components
     pub fn build_system_prompt(&self) -> String {
         let mut parts = vec![];
-        
+
         if !self.description.is_empty() {
             parts.push(format!("[Character Description]\n{}", self.description));
         }
-        
+
         if !self.personality.is_empty() {
             parts.push(format!("[Personality]\n{}", self.personality));
         }
-        
+
         if !self.scenario.is_empty() {
             parts.push(format!("[Scenario]\n{}", self.scenario));
         }
-        
+
         if !self.mes_example.is_empty() {
             parts.push(format!("[Example Messages]\n{}", self.mes_example));
         }
-        
+
         parts.join("\n\n")
     }
-    
+
     /// Get first greeting message
     pub fn get_greeting(&self) -> String {
         self.first_mes.clone()

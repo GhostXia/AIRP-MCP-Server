@@ -1,10 +1,10 @@
 //! Common test utilities
 
+use airp_mcp_server::mcp::AirpMcpServer;
+use airp_mcp_server::storage::Storage;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
-use airp_mcp_server::mcp::AirpMcpServer;
-use airp_mcp_server::storage::Storage;
 
 pub struct TestContext {
     pub data_dir: PathBuf,

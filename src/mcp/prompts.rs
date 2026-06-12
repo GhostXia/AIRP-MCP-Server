@@ -1,16 +1,17 @@
 //! MCP Prompt handlers
 
-use serde_json::Value;
-use rmcp::model::{PromptMessage, PromptMessageRole};
+use super::AirpMcpServer;
 use crate::error::Result;
 use crate::models::*;
 use crate::storage::*;
-use super::AirpMcpServer;
+use rmcp::model::{PromptMessage, PromptMessageRole};
+use serde_json::Value;
 
 impl AirpMcpServer {
     pub async fn build_system_prompt_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let character_id = args["character_id"].as_str()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let character_id = args["character_id"].as_str().ok_or_else(|| {
+            crate::error::AirpError::Validation("Missing character_id".to_string())
+        })?;
         let preset_id = args["preset_id"].as_str();
 
         let id = CharacterId::new(character_id)?;
@@ -47,9 +48,11 @@ impl AirpMcpServer {
     }
 
     pub async fn filter_text_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let text = args["text"].as_str()
+        let text = args["text"]
+            .as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing text".to_string()))?;
-        let preset_id = args["preset_id"].as_str()
+        let preset_id = args["preset_id"]
+            .as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing preset_id".to_string()))?;
 
         let id = PresetId::new(preset_id)?;
@@ -87,12 +90,17 @@ Only include fields that have actually changed. The system will automatically up
 
     // Decompose prompts
 
-    pub async fn prompt_decompose_character_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let character_id = args["character_id"].as_str()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+    pub async fn prompt_decompose_character_messages(
+        &self,
+        args: Value,
+    ) -> Result<Vec<PromptMessage>> {
+        let character_id = args["character_id"].as_str().ok_or_else(|| {
+            crate::error::AirpError::Validation("Missing character_id".to_string())
+        })?;
         let target_dir = args["target_dir"].as_str().unwrap_or("./decomposed");
 
-        let content = format!(r#"You are helping the user decompose a character card into Agent-friendly Markdown documents.
+        let content = format!(
+            r#"You are helping the user decompose a character card into Agent-friendly Markdown documents.
 
 ## Task Goal
 
@@ -204,17 +212,26 @@ Create README.md with quick reference links to all files.
 Return the decomposition result including:
 - List of created files
 - Target directory path
-- Whether enhancement analysis is needed"#);
+- Whether enhancement analysis is needed"#
+        );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
 
-    pub async fn prompt_enhance_analysis_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let character_id = args["character_id"].as_str()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+    pub async fn prompt_enhance_analysis_messages(
+        &self,
+        args: Value,
+    ) -> Result<Vec<PromptMessage>> {
+        let character_id = args["character_id"].as_str().ok_or_else(|| {
+            crate::error::AirpError::Validation("Missing character_id".to_string())
+        })?;
         let target_dir = args["target_dir"].as_str().unwrap_or("./decomposed");
 
-        let content = format!(r#"You are performing enhanced analysis on decomposed character files.
+        let content = format!(
+            r#"You are performing enhanced analysis on decomposed character files.
 
 ## Task Goal
 
@@ -278,20 +295,31 @@ Edit each md file directly, replace `<!-- -->` comments with actual analysis con
 ## Notes
 - Analysis should be based on card text, don't fabricate
 - Keep objective, mark "to be confirmed" if uncertain
-- Results should be concise and practical for later reference"#);
+- Results should be concise and practical for later reference"#
+        );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
 
-    pub async fn prompt_build_session_context_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let character_id = args["character_id"].as_str()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
-        let _session_id = args["session_id"].as_str()
+    pub async fn prompt_build_session_context_messages(
+        &self,
+        args: Value,
+    ) -> Result<Vec<PromptMessage>> {
+        let character_id = args["character_id"].as_str().ok_or_else(|| {
+            crate::error::AirpError::Validation("Missing character_id".to_string())
+        })?;
+        let _session_id = args["session_id"]
+            .as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing session_id".to_string()))?;
-        let decomposed_dir = args["decomposed_dir"].as_str()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing decomposed_dir".to_string()))?;
+        let decomposed_dir = args["decomposed_dir"].as_str().ok_or_else(|| {
+            crate::error::AirpError::Validation("Missing decomposed_dir".to_string())
+        })?;
 
-        let content = format!(r#"You are building initial context for a roleplay session.
+        let content = format!(
+            r#"You are building initial context for a roleplay session.
 
 ## Task Goal
 
@@ -349,18 +377,25 @@ Use MCP tool `append_message` to write:
 2. Character greeting (read from greetings.md)
 
 ## Output
-Return summary of completed session context."#);
+Return summary of completed session context."#
+        );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
 
     pub async fn seal_volume_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let character_id = args["character_id"].as_str()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
-        let session_id = args["session_id"].as_str()
+        let character_id = args["character_id"].as_str().ok_or_else(|| {
+            crate::error::AirpError::Validation("Missing character_id".to_string())
+        })?;
+        let session_id = args["session_id"]
+            .as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing session_id".to_string()))?;
 
-        let content = format!(r#"You are sealing/archiving a session volume.
+        let content = format!(
+            r#"You are sealing/archiving a session volume.
 
 ## Task Goal
 
@@ -409,16 +444,22 @@ If user wants to start fresh, use `rollback_messages` to clear current session.
 ## Notes
 - Preserve all message metadata
 - Maintain chronological order
-- Include state changes if recorded in messages"#);
+- Include state changes if recorded in messages"#
+        );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
 
     pub async fn analyze_preset_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let preset_id = args["preset_id"].as_str()
+        let preset_id = args["preset_id"]
+            .as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing preset_id".to_string()))?;
 
-        let content = format!(r#"You are a preset analysis Agent. Analyze preset `{pid}` by following these steps:
+        let content = format!(
+            r#"You are a preset analysis Agent. Analyze preset `{pid}` by following these steps:
 
 **Step 1: Read the Preset**
 Read `airp://presets/{pid}/raw` to get the full SillyTavern Preset JSON.
@@ -433,14 +474,19 @@ Read `airp://presets/{pid}/artifacts` to confirm all artifact paths appear."#,
             pid = preset_id
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
 
     pub async fn build_scene_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let scene_id = args["scene_id"].as_str()
+        let scene_id = args["scene_id"]
+            .as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing scene_id".to_string()))?;
 
-        let content = format!(r#"You are running a multi-character roleplay scene `{sid}`.
+        let content = format!(
+            r#"You are running a multi-character roleplay scene `{sid}`.
 
 **Step 1: Load Scene Configuration**
 Read `airp://scenes/{sid}` for the full scene config.
@@ -490,14 +536,19 @@ Format:
             sid = scene_id
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
 
     pub async fn validate_card_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let character_id = args["character_id"].as_str()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing character_id".to_string()))?;
+        let character_id = args["character_id"].as_str().ok_or_else(|| {
+            crate::error::AirpError::Validation("Missing character_id".to_string())
+        })?;
 
-        let content = format!("Validate the character card `{0}` for unknown or suspicious content.\n\
+        let content = format!(
+            "Validate the character card `{0}` for unknown or suspicious content.\n\
 \n\
 Read `airp://characters/{0}/card` and scan for:\n\
 \n\
@@ -536,16 +587,22 @@ If you find fragments you cannot identify, do NOT delete them. Instead:\n\
             character_id
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
 
     pub async fn tune_preset_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let preset_id = args["preset_id"].as_str()
+        let preset_id = args["preset_id"]
+            .as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing preset_id".to_string()))?;
-        let feedback = args["feedback"].as_str().unwrap_or(
-            "The user finds the current output style unsatisfactory.");
+        let feedback = args["feedback"]
+            .as_str()
+            .unwrap_or("The user finds the current output style unsatisfactory.");
 
-        let content = format!(r#"You are hot-tuning preset `{pid}` based on the user's style feedback.
+        let content = format!(
+            r#"You are hot-tuning preset `{pid}` based on the user's style feedback.
 
 ## User feedback
 {feedback}
@@ -576,16 +633,23 @@ post-process the generated text.
 - This is a best-effort enhancement: it improves the odds, it does NOT guarantee
   the resulting style. If the first tune misses, ask the user to refine the
   feedback and iterate."#,
-            pid = preset_id, feedback = feedback);
+            pid = preset_id,
+            feedback = feedback
+        );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
 
     pub async fn validate_preset_messages(&self, args: Value) -> Result<Vec<PromptMessage>> {
-        let preset_id = args["preset_id"].as_str()
+        let preset_id = args["preset_id"]
+            .as_str()
             .ok_or_else(|| crate::error::AirpError::Validation("Missing preset_id".to_string()))?;
 
-        let content = format!("Validate the preset `{0}` for unknown or suspicious content.\n\
+        let content = format!(
+            "Validate the preset `{0}` for unknown or suspicious content.\n\
 \n\
 Read `airp://presets/{0}/raw` and scan for:\n\
 \n\
@@ -629,7 +693,9 @@ For fragments you cannot identify:\n\
             preset_id
         );
 
-        Ok(vec![PromptMessage::new_text(PromptMessageRole::User, content)])
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            content,
+        )])
     }
-
 }

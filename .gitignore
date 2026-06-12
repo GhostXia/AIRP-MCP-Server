@@ -8,9 +8,10 @@ data/
 .env
 config.json
 
-# IDE
+# IDE / agent local settings
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 

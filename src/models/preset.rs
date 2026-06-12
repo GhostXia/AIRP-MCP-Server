@@ -59,24 +59,24 @@ impl Preset {
     /// Build complete system prompt with prefix/suffix
     pub fn build_system_prompt(&self, character_prompt: &str) -> String {
         let mut parts = vec![];
-        
+
         if !self.config.system_prompt_prefix.is_empty() {
             parts.push(self.config.system_prompt_prefix.clone());
         }
-        
+
         parts.push(character_prompt.to_string());
-        
+
         if !self.config.system_prompt_suffix.is_empty() {
             parts.push(self.config.system_prompt_suffix.clone());
         }
-        
+
         parts.join("\n\n")
     }
-    
+
     /// Apply regex scripts to text
     pub fn apply_filters(&self, text: &str) -> String {
         let mut result = text.to_string();
-        
+
         for script in &self.config.regex_scripts {
             if script.enabled {
                 if let Ok(re) = regex::Regex::new(&script.find) {
@@ -84,7 +84,7 @@ impl Preset {
                 }
             }
         }
-        
+
         result
     }
 }

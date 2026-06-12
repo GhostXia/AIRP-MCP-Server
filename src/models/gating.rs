@@ -81,7 +81,10 @@ impl GatingConfig {
         format!(
             "Turn {}/{}, Checkpoints: {}/{} reached",
             self.turn_count,
-            self.checkpoints.last().map(|c| c.turns_required).unwrap_or(0),
+            self.checkpoints
+                .last()
+                .map(|c| c.turns_required)
+                .unwrap_or(0),
             reached,
             total,
         )

@@ -1,7 +1,7 @@
 //! Session models
 
+use super::{CharacterId, Message, SessionId};
 use serde::{Deserialize, Serialize};
-use super::{CharacterId, SessionId, Message};
 
 /// Chat session
 #[derive(Debug, Clone, Serialize, Deserialize)]

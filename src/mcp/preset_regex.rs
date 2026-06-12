@@ -28,9 +28,7 @@ const PLACEMENT_AI_OUTPUT: i32 = 2;
 ///
 /// Each JSON file can be a single script object or an array of scripts.
 /// Per-file parse failure only logs a warning, won't block other scripts.
-pub fn load_preset_regex_scripts(
-    regex_dir: &Path,
-) -> Vec<SillyTavernRegexScript> {
+pub fn load_preset_regex_scripts(regex_dir: &Path) -> Vec<SillyTavernRegexScript> {
     if !regex_dir.exists() {
         return vec![];
     }
