@@ -20,7 +20,12 @@ pub use decompose::{CharacterDecomposer, DecomposeConfig, DecomposeResult, Prese
 /// the model context. Guards against a plugin storing a huge blob/JSON that,
 /// when read whole, blows the token budget. Oversized reads error or truncate
 /// with a `[PARTIAL: ...]` marker so the caller pages instead of dumping.
-pub(crate) const MAX_READ_BYTES: usize = 256 * 1024;
+///
+/// 32 KiB ≈ ~9K tokens as text; as base64 (blob_read) it expands ~1.33x to
+/// ~15-22K tokens. Kept deliberately tight: a single read should be a chunk,
+/// not a context-window-filling dump. (256 KiB base64 would have been ~150K
+/// tokens — almost a whole context window.)
+pub(crate) const MAX_READ_BYTES: usize = 32 * 1024;
 
 #[derive(Clone)]
 pub struct AirpMcpServer {
@@ -1019,7 +1024,7 @@ fn plugin_blob_write_tool() -> Tool {
 fn plugin_blob_read_tool() -> Tool {
     Tool::new(
         "plugin_blob_read",
-        "Read a plugin file. Default returns content_base64; as_text=true returns content_text (UTF-8). Single-read cap 256 KiB — larger files error; read from filesystem directly or page via offset tooling.",
+        "Read a plugin file. Default returns content_base64; as_text=true returns content_text (UTF-8). Single-read cap 32 KiB raw — base64 output is ~1.33x larger, so prefer as_text for UTF-8 content. Larger files error; read from filesystem directly or page.",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
