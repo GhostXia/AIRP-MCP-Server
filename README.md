@@ -14,7 +14,7 @@
 > 客户端（Claude Code / Cursor / pi / Codex / 自研皆可）即可单独运行，38 个工具**任取子集**使用。
 > 下方提到的 AIRP-Core / AIRP-Gateway 是**可选、各自独立**的伙伴项目，**不是前置依赖**——按需拆用，
 > 像乐高积木，不必整套。
-
+>
 > **AIRP-MCP-Server** 是 AIRP 的轻量级 MCP 版本。若需完整的流式 SSE 网关、实时角色状态面板、
 > 守护进程部署、OpenAI 兼容 API 代理等高级功能，可**选用** **[AIRP-Core](https://github.com/GhostXia/AIRP-Core)**
 > —— AIRP 项目的全面版本（独立项目，非本仓依赖）。
