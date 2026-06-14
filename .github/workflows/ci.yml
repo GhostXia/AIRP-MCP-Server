@@ -29,3 +29,22 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
+
+  # Publish a Linux x86_64 `airp-mcp` binary as a CI artifact so any MCP client
+  # can download it and drive the real process in cross-process e2e tests.
+  # ubuntu-latest + stable => x86_64-unknown-linux-gnu.
+  release-binary:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build release binary
+        run: cargo build --release --bin airp-mcp
+      - name: upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: airp-mcp-linux-x86_64
+          path: target/release/airp-mcp
+          if-no-files-found: error
