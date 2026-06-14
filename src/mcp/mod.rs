@@ -79,8 +79,11 @@ fn value_from_map(map: serde_json::Map<String, serde_json::Value>) -> serde_json
 
 impl ServerHandler for AirpMcpServer {
     fn get_info(&self) -> ServerInfo {
+        // Leave protocol_version at ServerInfo::default() (rmcp's LATEST). rmcp
+        // negotiates down to min(client, server) at initialize, so declaring the
+        // newest version we support stays backward-compatible with older clients
+        // while not capping modern ones — hardcoding an older version would.
         let mut info = ServerInfo::default();
-        info.protocol_version = ProtocolVersion::V_2025_03_26;
         info.capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_prompts()
