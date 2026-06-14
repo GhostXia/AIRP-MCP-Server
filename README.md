@@ -10,9 +10,14 @@
 一个纯 MCP 协议的角色扮演**数据管理**服务器。**不调用任何 AI API，不自造 Agent runtime，不做推理。**
 所有推理、叙事推进、角色演绎，都由 MCP Client（Claude Code / Cursor / pi / Codex）通过 AIRP 暴露的 **Tools / Resources / Prompts** 完成。AIRP 只负责把角色卡、世界书、预设、会话、状态、记忆**存好、取好、装配好**。
 
+> **独立可用 · 非全家桶**：本仓是**自包含的标准 MCP server**——零依赖其他 AIRP 仓库，配**任何** MCP
+> 客户端（Claude Code / Cursor / pi / Codex / 自研皆可）即可单独运行，38 个工具**任取子集**使用。
+> 下方提到的 AIRP-Core / AIRP-Gateway 是**可选、各自独立**的伙伴项目，**不是前置依赖**——按需拆用，
+> 像乐高积木，不必整套。
+
 > **AIRP-MCP-Server** 是 AIRP 的轻量级 MCP 版本。若需完整的流式 SSE 网关、实时角色状态面板、
-> 守护进程部署、OpenAI 兼容 API 代理等高级功能，请用 **[AIRP-Core](https://github.com/GhostXia/AIRP-Core)**
-> —— AIRP 项目的全面版本。
+> 守护进程部署、OpenAI 兼容 API 代理等高级功能，可**选用** **[AIRP-Core](https://github.com/GhostXia/AIRP-Core)**
+> —— AIRP 项目的全面版本（独立项目，非本仓依赖）。
 
 ---
 
