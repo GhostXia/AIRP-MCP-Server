@@ -79,10 +79,14 @@ fn value_from_map(map: serde_json::Map<String, serde_json::Value>) -> serde_json
 
 impl ServerHandler for AirpMcpServer {
     fn get_info(&self) -> ServerInfo {
-        // Leave protocol_version at ServerInfo::default() (rmcp's LATEST). rmcp
-        // negotiates down to min(client, server) at initialize, so declaring the
-        // newest version we support stays backward-compatible with older clients
-        // while not capping modern ones — hardcoding an older version would.
+        // Leave protocol_version at ServerInfo::default() (rmcp's LATEST) rather
+        // than pinning one. rmcp's server side (serve_server in service/server.rs,
+        // shared by stdio and the streamable-HTTP per-session path) sets the
+        // response version to min(client_requested, server_declared) when both are
+        // known, and errors if the client's version is unknown. So declaring
+        // LATEST hands each client back its own (older) version — backward
+        // compatible — without capping modern clients; a hardcoded older version
+        // would instead cap everyone at it.
         let mut info = ServerInfo::default();
         info.capabilities = ServerCapabilities::builder()
             .enable_tools()

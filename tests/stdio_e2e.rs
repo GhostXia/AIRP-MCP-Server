@@ -122,8 +122,7 @@ async fn stdio_handshake_then_tool_call_returns_real_data() {
     let call = read_response(&mut stdout, 2).await;
     assert!(call.get("error").is_none(), "tools/call errored: {call}");
     assert_ne!(
-        call["result"]["isError"],
-        serde_json::Value::Bool(true),
+        call["result"]["isError"], true,
         "tools/call must not be an error result: {call}"
     );
     let text = call["result"]["content"][0]["text"]
@@ -134,10 +133,14 @@ async fn stdio_handshake_then_tool_call_returns_real_data() {
         "list_characters on an empty dir must return the real empty-state message, got: {text:?}"
     );
 
-    // A6: closing stdin makes the server exit on its own.
+    // A6: closing stdin makes the server exit on its own, cleanly.
     drop(stdin);
-    timeout(Duration::from_secs(10), child.wait())
+    let status = timeout(Duration::from_secs(10), child.wait())
         .await
         .expect("server did not exit within 10s of stdin closing")
         .expect("failed to await child exit");
+    assert!(
+        status.success(),
+        "server must exit cleanly on stdin close, got: {status}"
+    );
 }
