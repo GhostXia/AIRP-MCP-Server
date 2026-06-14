@@ -62,7 +62,11 @@ async fn stdio_handshake_then_tool_call_returns_real_data() {
         .arg(dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null()) // logs land here; dropping them proves stdout is clean
+        // Inherit the server's stderr so a CI failure can surface its logs. We
+        // still parse only the piped stdout, so the stdout-clean check (A3) holds.
+        .stderr(Stdio::inherit())
+        // Reap the child if an assertion panics before we reach child.wait().
+        .kill_on_drop(true)
         .spawn()
         .expect("failed to spawn airp-mcp");
 
