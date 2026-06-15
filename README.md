@@ -55,7 +55,7 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 
 ### 最小用法（单块乐高）
 
-配好上面的 Client 即可——**无需任何工作流、无需其他 AIRP 仓库**。一个能用的最小闭环只碰 3 个工具：
+配好上面的 Client 即可——**无需任何工作流、无需其他 AIRP 仓库**。一个能用的最小闭环只用少数几个工具：
 
 1. `import_card` 导入角色卡（PNG / JSON）→ 拿到 `character_id`
 2. `start_session` 开一个会话
