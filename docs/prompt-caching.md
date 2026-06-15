@@ -21,7 +21,8 @@ Anthropic 的 **prompt caching** 正是干这个：把稳定前缀标记为 `cac
 
 一个**本地代理**，做的事很聚焦：
 
-- 把提示词里的 `[[CACHE_BREAK]]` 标记，在转发给上游（Anthropic / 兼容端）**之前**，转成 Claude 原生 `cache_control` 块（默认 TTL 1h，Claude 最多 4 个缓存断点）。
+- 把提示词里的 `[[CACHE_BREAK]]` 标记，在转发给上游（Anthropic / 兼容端）**之前**，转成 Claude 原生 `cache_control` 块（Claude 每请求最多 4 个缓存断点）。
+  - 注：Anthropic 缓存的服务端 TTL **默认 5 分钟**（每次命中自动续期），另有 **1 小时**扩展档（beta，需对应 header）；不是任意时长。该网关默认请求 1h 档，并非 Anthropic 的默认值。
 - 对外收 `POST /v1/chat/completions`（OpenAI 式）与 `POST /v1/messages`（Anthropic 式），SillyTavern 把 base URL 指向它（如 `http://127.0.0.1:8788`）即可，**不打断 ST 原有的记忆/世界书/正则/预设插件链**——它们先跑完，最终请求才到这个网关。
 
 **值得学的点**：用一个**人类可写、后端无关的标记**（`[[CACHE_BREAK]]`）划出「稳定 | 易变」边界，把**模型特定的翻译**（→ `cache_control`）下沉到一个**薄边缘代理**。关注点分离得很干净。
@@ -59,6 +60,8 @@ MCP-Server 的提示拼装工具（如 `build_scene_system_prompt`、`export_con
 - 与 AIRP 的 token 纪律同源，纯增量、可选、不破坏既有契约。
 
 翻译那一步（marker → `cache_control`）始终在**边缘**完成。各司其层。
+
+> **实现注意**：Anthropic 的 `cache_control` 挂在**结构化内容块**上（`system` / `messages` 的 `[{type:"text", text, cache_control}]` 数组），不是扁平字符串里的内联标记。所以边缘翻译时要：按 `[[CACHE_BREAK]]` 把扁平提示**切成结构块**，给标记**之前**的稳定前缀块附 `cache_control`，标记本身从文本里去掉。MCP-Server 只管吐标记，这层重组是边缘的活。
 
 ---
 
