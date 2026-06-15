@@ -53,6 +53,16 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 }
 ```
 
+### 最小用法（单块乐高）
+
+配好上面的 Client 即可——**无需任何工作流、无需其他 AIRP 仓库**。一个能用的最小闭环只用少数几个工具：
+
+1. `import_card` 导入角色卡（PNG / JSON）→ 拿到 `character_id`
+2. `start_session` 开一个会话
+3. 之后 `append_message` 追加对话、`get_recent_context` 取回上下文
+
+就这些。其余 30+ 工具、下面 [SKILL.md](SKILL.md) 的 6 阶段 / 三幕范例、Core / Gateway —— **全是可选增强**，按需取用，不必整套。
+
 ### Agent 用法指南
 
 项目根目录的 [SKILL.md](SKILL.md) 是给 **AI Agent 阅读**的操作手册：
