@@ -115,6 +115,6 @@
 
 ## 6. 变更日志
 
-- **2026-06-15** 反思「不改码能否兼容外部缓存网关完体」→ 不能。新增 §2.D：输出未按易变性分区（`export_context_bundle` 把易变活体状态夹在稳定块中间），下游复用（缓存/diff/增量）难。记为通用改进候选（按易变性排序 + 可选中性边界标记）。另：新增 [prompt-caching.md](prompt-caching.md) 设计参考（PR #20）。
+- **2026-06-15** 反思「不改码能否兼容外部缓存网关完全体」→ 不能。新增 §2.D：输出未按易变性分区（`export_context_bundle` 把易变活体状态夹在稳定块中间），下游复用（缓存/diff/增量）难。记为通用改进候选（按易变性排序 + 可选中性边界标记）。另：新增 [prompt-caching.md](prompt-caching.md) 设计参考（PR #20）。
 - **2026-06-14** §1.A HTTP 集成测试**完成**并升级为活体验证；连带修复 Router 包装导致的 0 工具 bug。新增 stdio 跨进程 e2e + Linux 二进制 artifact。协议版本改吃 rmcp `LATEST`（min 协商兜底兼容）。文档转 standalone-first。PR #16 / #17 合入 main。下一步 = §2.A Gateway 互通收尾（Release 二进制）。
 - **2026-06-12** 建档。确立 §0 判据 + §4 护栏 + §5 契约规约。下一步 = §1.A HTTP 集成测试。
