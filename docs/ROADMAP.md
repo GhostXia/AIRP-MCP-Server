@@ -67,6 +67,7 @@
 | **可观测性** | 生产部署 / 排障需要时 | 结构化日志已具；按需加请求级 tracing / 指标。**不为加而加** |
 | **健康/就绪探针** | 容器/编排部署时 | 已有 `/health`；需要时加 `/ready` |
 | **协议版本随 rmcp 升级** | rmcp 出新版 | 已吃 `LATEST`，自动跟进；只需确认 `min` 协商对新版仍成立 |
+| **提示缓存（中性标记）** | 客户端/Gateway 要省 Claude token 时 | MCP-Server 侧**至多**在拼装输出里可选吐中性 `[[CACHE_BREAK]]` 标记（稳定\|易变边界）；翻译成 `cache_control` 留在边缘。设计参考见 [prompt-caching.md](prompt-caching.md) |
 
 > **审查 bot 提示**：CodeRabbit（仅自动审进 main 的 PR；进 beta 需 `@coderabbitai review`）、Gemini（**2026-07-17 停服**，届时主力转 CodeRabbit）、Codex（常超额度）。bot 发现一律当「待核实的声明」，非事实——核源码再定（CodeRabbit 曾就 rmcp 版本协商发误报）。
 
