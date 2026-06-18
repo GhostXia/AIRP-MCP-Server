@@ -28,7 +28,7 @@
   - 工具实现：`src/mcp/tools.rs`（`handle_*`）；工具/资源/提示词清单 + `ServerHandler`：`src/mcp/mod.rs`（`list_tools` 38 个）。
   - 存储 + **路径沙箱**：`src/storage/`（`safe_resolve_for_write`、`validate_id_segment` 在 `mod.rs`，已被所有传路径的工具调用）。
   - 传输：`src/transport/`（`stdio.rs` / `http.rs`；HTTP 测试在 `http.rs` 的 `#[cfg(test)]`，跨进程 e2e 在 `tests/stdio_e2e.rs`）。
-  - 拼装：`build_scene_system_prompt`、`export_context_bundle`（均在 `tools.rs`）。
+  - 拼装：工具 `build_scene_system_prompt` / `export_context_bundle`（Rust handler 为 `handle_*`，均在 `tools.rs`）。
 - **三产品分工**：MCP-Server = 数据层（本仓）；Gateway = 协议桥（限流/鉴权/缓存等边缘）；State-Protocol = UI 渲染契约。功能该落谁，先按这条 + §0 判据。
 
 ---
@@ -87,7 +87,7 @@
 3. 两者**保持可选**，不破坏现有可读输出、不违「决策下放 / 通用优先」。
 
 **注意**：当前布局对 `export_context_bundle` 本职（喂隔离 subagent、可读性优先）是合理权衡，不是 bug；改时勿回归可读性。
-**入口**：`src/mcp/tools.rs`（`build_scene_system_prompt` ~1099、`export_context_bundle` ~1236）。
+**入口**：`src/mcp/tools.rs`（`handle_build_scene_system_prompt` ~1099、`handle_export_context_bundle` ~1236）。
 **退出标准**：稳定前缀在多轮间字节稳定（活体状态变动不影响其之前内容）；标记为可选输出，默认行为不变。
 
 ### D · 软删除（删除操作可逆）← 候选，未排期
@@ -151,7 +151,7 @@
 ## 6. 变更日志
 
 - **2026-06-15** 整理 ROADMAP 为接力友好（加 §0.5 接力须知 + 代码地图；删退役的 beta 拉齐项；候选重编号 C/D + 标入口文件）。
-- **2026-06-15** 安全审查「防 Agent 越权」：核实路径沙箱 + 资源限制大半已实现（`safe_resolve_for_write`/`validate_id_segment`/import_card 10MiB/`max_read_bytes`/serde 递归 128）；缺口是删除不可逆。新增 §2.D 软删除（→`.trash`，可恢复）。二次确认判为宿主职责、不做；只读入 §3。
+- **2026-06-15** 安全审查「防 Agent 越权」：核实路径沙箱 + 资源限制大半已实现（`safe_resolve_for_write`/`validate_id_segment`/import_card 10MiB/`max_read_bytes`/serde 递归 128）；缺口是删除不可逆。新增 §2.D 软删除（→`.trash`，可恢复）。二次确认判为宿主职责、不做；只读模式移入 §3。
 - **2026-06-15** 反思缓存网关兼容性 → 新增 §2.C：输出未按易变性分区，下游复用难。新增 [prompt-caching.md](prompt-caching.md) 设计参考（PR #20）。
 - **2026-06-14** §1.A HTTP 集成测试**完成**并升级为活体验证；连带修复 Router 包装导致的 0 工具 bug。新增 stdio 跨进程 e2e + Linux 二进制 artifact。协议版本改吃 rmcp `LATEST`。文档转 standalone-first。PR #16 / #17 合入 main。
 - **2026-06-12** 建档。确立 §0 判据 + §4 护栏 + §5 契约规约。下一步 = §1.A HTTP 集成测试。
