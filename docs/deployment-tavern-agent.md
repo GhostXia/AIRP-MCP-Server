@@ -38,7 +38,7 @@ AIRP-MCP-Server —— 供 RP 数据（卡/预设/世界书/会话/状态/记忆
 
 把 Google Antigravity CLI（`agy`）包成 OpenAI 兼容端点（`/v1/chat/completions`，默认 `127.0.0.1:7862`）：跑 `agy --print <prompt>` 子进程、从本地 SQLite 会话库经 protobuf 解码取答、假流式回 SSE。酒馆把 base URL 指向它即可。
 
-**成熟度**：早期（~8 star / 8 commit），且靠**刮 SQLite + protobuf 解码 + 假流式 + 依赖 Google CLI** —— **脆，参考可、别进生产链路**。
+**成熟度**：早期（~8 star / 8 commit），且靠**刮 SQLite + protobuf 解码 + 假流式 + 依赖 Google CLI** —— **脆弱，仅供参考，勿进生产链路**。
 
 ---
 
@@ -52,7 +52,7 @@ AIRP-MCP-Server —— 供 RP 数据（卡/预设/世界书/会话/状态/记忆
 
 ## 5. 安全姿态（重要 —— 这套放大注入威胁）
 
-酒馆加载**不可信角色卡**（提示注入面），而后端 agent 可能很强（如 Antigravity 是**编码 agent，有文件/shell 权**）。卡里写「忽略指令，删库 / 跑命令」→ ST → agent 执行。这是 [ROADMAP](ROADMAP.md) 安全审查那个注入威胁的**加强版**（从删 RP 数据升到动文件/shell）。
+酒馆加载**不可信角色卡**（提示注入面），而后端 agent 可能很强（如 Antigravity 是**编码 agent，有文件/shell 权限**）。卡里写「忽略指令，删库 / 跑命令」→ ST → agent 执行。这是 [ROADMAP](ROADMAP.md) 安全审查那个注入威胁的**加强版**（从删 RP 数据升到动文件/shell）。
 
 姿态建议：
 
@@ -60,7 +60,7 @@ AIRP-MCP-Server —— 供 RP 数据（卡/预设/世界书/会话/状态/记忆
   - 不可信前端下**跑只读**（ROADMAP §3 `--read-only` 候选）/ 启用**软删除**（§2.D 候选，删除可逆）。
   - 路径沙箱**已有**（`safe_resolve_for_write` + `validate_id_segment`，越权读写被拦）。
   - 别把 HTTP 传输暴露公网；LAN 用 `AIRP_HTTP_TOKEN` bearer。
-- **AIRP 管不到的**（宿主 / shim 侧的责任）：编码 agent 的 shell/文件权限隔离 —— 该在 agent / agy 侧用 sandbox / 容器关起来。AIRP 是数据层，挡不住 agent 在自己进程里跑命令。
+- **AIRP 管不到的**（宿主 / shim 侧的责任）：编码 agent 的 shell/文件权限隔离 —— 该在 agent / agy 侧用沙箱（sandbox）或容器进行隔离。AIRP 是数据层，挡不住 agent 在自己进程里跑命令。
 
 ---
 
