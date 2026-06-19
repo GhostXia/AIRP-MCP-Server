@@ -38,7 +38,7 @@ AIRP-MCP-Server —— 供 RP 数据（卡/预设/世界书/会话/状态/记忆
 
 把 Google Antigravity CLI（`agy`）包成 OpenAI 兼容端点（`/v1/chat/completions`，默认 `127.0.0.1:7862`）：跑 `agy --print <prompt>` 子进程、从本地 SQLite 会话库经 protobuf 解码取答、假流式回 SSE。酒馆把 base URL 指向它即可。
 
-**成熟度**：早期（~8 star / 8 commit），且靠**刮 SQLite + protobuf 解码 + 假流式 + 依赖 Google CLI** —— **脆弱，仅供参考，勿进生产链路**。
+**成熟度**：早期 / 实验级（star、commit 都很少），且靠**刮 SQLite + protobuf 解码 + 假流式 + 依赖 Google CLI** —— **脆弱，仅供参考，勿进生产链路**。
 
 ---
 
@@ -56,10 +56,11 @@ AIRP-MCP-Server —— 供 RP 数据（卡/预设/世界书/会话/状态/记忆
 
 姿态建议：
 
-- **AIRP 侧**（本服务能管的）：
-  - 不可信前端下**跑只读**（ROADMAP §3 `--read-only` 候选）/ 启用**软删除**（§2.D 候选，删除可逆）。
+- **AIRP 侧 —— 现在就能用**：
   - 路径沙箱**已有**（`safe_resolve_for_write` + `validate_id_segment`，越权读写被拦）。
   - 别把 HTTP 传输暴露公网；LAN 用 `AIRP_HTTP_TOKEN` bearer。
+  - 把整套当实验：用**隔离 / 可丢弃的 data-dir**，重要数据另存。
+- **AIRP 侧 —— 规划中（尚未实现，别当现成防线）**：`--read-only`（ROADMAP §3 候选）、**软删除**（§2.D 候选，删除可逆）。**落地前删除是硬删、写无开关** —— 当前 CLI 只有 `mcp` / `serve`（`data_dir` / `bind`），所以现在更要靠上面「现在就能用」那几条。
 - **AIRP 管不到的**（宿主 / shim 侧的责任）：编码 agent 的 shell/文件权限隔离 —— 该在 agent / agy 侧用沙箱（sandbox）或容器进行隔离。AIRP 是数据层，挡不住 agent 在自己进程里跑命令。
 
 ---
@@ -67,7 +68,7 @@ AIRP-MCP-Server —— 供 RP 数据（卡/预设/世界书/会话/状态/记忆
 ## 6. 给使用者 / 开发者
 
 - 想用**酒馆当前端 + agent 当后端**跑 RP：用一个 agent-shim（agy2api 之类或自建）把 agent 包成 OpenAI 端点，agent 内挂 AIRP-MCP-Server 当数据源。AIRP 不需改。
-- **务必**在不可信卡场景给 AIRP 上只读/软删、给 agent 上 sandbox。
+- 不可信卡场景：给 agent 上 sandbox；AIRP 用**隔离 data-dir + 路径沙箱（已有）**，**别暴露公网**。只读 / 软删等 §2.D/§3 落地后再上 —— 当前尚无这些开关。
 - 这条链任一环（shim、agy、Antigravity）都可换；AIRP 作为通用数据后端保持不变。
 
 Sources: [agy2api](https://github.com/GhostXia/agy2api) · [MCP servers in Antigravity (Codelabs)](https://codelabs.developers.google.com/google-workspace-mcp-antigravity)

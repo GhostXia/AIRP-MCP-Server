@@ -119,7 +119,7 @@
 | **健康/就绪探针** | 容器/编排部署时 | 已有 `/health`；需要时加 `/ready` |
 | **协议版本随 rmcp 升级** | rmcp 出新版 | 已吃 `LATEST`，自动跟进；只需确认 `min` 协商对新版仍成立 |
 | **入口尺寸 cap 补全** | 关注 stdio OOM 面时 | stdio 帧无上限、`import_preset`/`plugin_blob_write` 无显式字节 cap（HTTP 有 axum 默认 ~2MB、import_card 有 10MiB、serde 递归 128 已兜底） |
-| **酒馆前端 + agent 后端部署** | 想用 SillyTavern 当前端、agent 当后端跑 RP 时 | AIRP 零改动即可当 agent 的 MCP 数据后端（agy 走 stdio/streamable-http 均可）。设计 + 安全姿态见 [deployment-tavern-agent.md](deployment-tavern-agent.md)。**不可信卡场景：AIRP 应只读/软删，agent 应 sandbox**（强化 §2.D + §3 只读动机） |
+| **酒馆前端 + agent 后端部署** | 想用 SillyTavern 当前端、agent 当后端跑 RP 时 | AIRP 零改动即可当 agent 的 MCP 数据后端（agy 走 stdio/streamable-http 均可）。设计 + 安全姿态见 [deployment-tavern-agent.md](deployment-tavern-agent.md)。**不可信卡场景：agent 应 sandbox；AIRP 当前用隔离 data-dir + 路径沙箱（已有），只读/软删待 §2.D+§3 落地**（此用法强化其动机） |
 
 ---
 
