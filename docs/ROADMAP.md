@@ -119,6 +119,7 @@
 | **健康/就绪探针** | 容器/编排部署时 | 已有 `/health`；需要时加 `/ready` |
 | **协议版本随 rmcp 升级** | rmcp 出新版 | 已吃 `LATEST`，自动跟进；只需确认 `min` 协商对新版仍成立 |
 | **入口尺寸 cap 补全** | 关注 stdio OOM 面时 | stdio 帧无上限、`import_preset`/`plugin_blob_write` 无显式字节 cap（HTTP 有 axum 默认 ~2MB、import_card 有 10MiB、serde 递归 128 已兜底） |
+| **酒馆前端 + agent 后端部署** | 想用 SillyTavern 当前端、agent 当后端跑 RP 时 | AIRP 零改动即可当 agent 的 MCP 数据后端（agy 走 stdio/streamable-http 均可）。设计 + 安全姿态见 [deployment-tavern-agent.md](deployment-tavern-agent.md)。**不可信卡场景：agent 应 sandbox；AIRP 当前用隔离 data-dir + 路径沙箱（已有），只读/软删待 §2.D+§3 落地**（此用法强化其动机） |
 
 ---
 
@@ -150,6 +151,7 @@
 
 ## 6. 变更日志
 
+- **2026-06-15** 新增 [deployment-tavern-agent.md](deployment-tavern-agent.md)：酒馆前端 + MCP-agent 后端（agy2api/Antigravity 为例）+ AIRP 数据后端的部署拓扑 + 安全姿态（不可信卡 → AIRP 只读/软删、agent sandbox）。AIRP 零改动；强化 §2.D + §3 只读动机。§3 加指针行。
 - **2026-06-15** 整理 ROADMAP 为接力友好（加 §0.5 接力须知 + 代码地图；删退役的 beta 拉齐项；候选重编号 C/D + 标入口文件）。
 - **2026-06-15** 安全审查「防 Agent 越权」：核实路径沙箱 + 资源限制大半已实现（`safe_resolve_for_write`/`validate_id_segment`/import_card 10MiB/`max_read_bytes`/serde 递归 128）；缺口是删除不可逆。新增 §2.D 软删除（→`.trash`，可恢复）。二次确认判为宿主职责、不做；只读模式移入 §3。
 - **2026-06-15** 反思缓存网关兼容性 → 新增 §2.C：输出未按易变性分区，下游复用难。新增 [prompt-caching.md](prompt-caching.md) 设计参考（PR #20）。
