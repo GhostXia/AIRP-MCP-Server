@@ -30,6 +30,7 @@
   - 传输：`src/transport/`（`stdio.rs` / `http.rs`；HTTP 测试在 `http.rs` 的 `#[cfg(test)]`，跨进程 e2e 在 `tests/stdio_e2e.rs`）。
   - 拼装：工具 `build_scene_system_prompt` / `export_context_bundle`（Rust handler 为 `handle_*`，均在 `tools.rs`）。
 - **三产品分工**：MCP-Server = 数据层（本仓）；Gateway = 协议桥（限流/鉴权/缓存等边缘）；State-Protocol = UI 渲染契约。功能该落谁，先按这条 + §0 判据。
+- **相关参考文档**（设计/部署思路，非功能承诺）：[prompt-caching.md](prompt-caching.md)（缓存归边缘 + 中性标记）、[deployment-tavern-agent.md](deployment-tavern-agent.md)（酒馆前端 + agent 后端 + 瘦客户端模式）、[skills-vs-mcp.md](skills-vs-mcp.md)（skill=静态层 / MCP=动态层，混合）。
 
 ---
 
@@ -151,7 +152,8 @@
 
 ## 6. 变更日志
 
-- **2026-06-15** 新增 [deployment-tavern-agent.md](deployment-tavern-agent.md)：酒馆前端 + MCP-agent 后端（agy2api/Antigravity 为例）+ AIRP 数据后端的部署拓扑 + 安全姿态（不可信卡 → AIRP 只读/软删、agent sandbox）。AIRP 零改动；强化 §2.D + §3 只读动机。§3 加指针行。
+- **2026-06-15** 新增 [skills-vs-mcp.md](skills-vs-mcp.md)：skill=静态指导层 / MCP(AIRP)=动态数据层，互补非二选一。卡+预设可炼成 skill（治死人化隔离杠杆），但状态/历史/记忆/大世界关键词门控仍须 AIRP；完整 RP = 混合。§0.5 加参考文档清单。
+- **2026-06-15** 新增 [deployment-tavern-agent.md](deployment-tavern-agent.md)：酒馆前端 + MCP-agent 后端（agy2api/Antigravity 为例）+ AIRP 数据后端的部署拓扑 + 安全姿态（不可信卡 → AIRP 只读/软删、agent sandbox）。AIRP 零改动；强化 §2.D + §3 只读动机。§3 加指针行。后续补「酒馆瘦客户端」节（剥提示词 + 历史主从/死人化两坑）。
 - **2026-06-15** 整理 ROADMAP 为接力友好（加 §0.5 接力须知 + 代码地图；删退役的 beta 拉齐项；候选重编号 C/D + 标入口文件）。
 - **2026-06-15** 安全审查「防 Agent 越权」：核实路径沙箱 + 资源限制大半已实现（`safe_resolve_for_write`/`validate_id_segment`/import_card 10MiB/`max_read_bytes`/serde 递归 128）；缺口是删除不可逆。新增 §2.D 软删除（→`.trash`，可恢复）。二次确认判为宿主职责、不做；只读模式移入 §3。
 - **2026-06-15** 反思缓存网关兼容性 → 新增 §2.C：输出未按易变性分区，下游复用难。新增 [prompt-caching.md](prompt-caching.md) 设计参考（PR #20）。
