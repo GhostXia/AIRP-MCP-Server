@@ -2,7 +2,7 @@
 
 > **定位**：追踪「下一步做什么、为什么、以及**故意不做什么**」。不是功能介绍。
 > **真理顺序**：源码 > 本文档。冲突时先改文档再继续。
-> 最后更新：2026-06-15 · 当前 main = `d0ece52`
+> 最后更新：2026-06-29 · 当前 main = `3d4bded`
 
 ## 0. 判据（动手前先过这条）
 
@@ -62,7 +62,7 @@
 
 ## 2. 进行中 / 下一步（Active）
 
-> 优先级：**A 是下一步**；B/C/D 是**各自独立**的候选，可任取。每条标了入口文件。
+> 优先级：**A 是下一步**；B/C/D/E 是**各自独立**的候选，可任取。每条标了入口文件。
 
 ### A · Gateway 互通收尾 ← **下一步**
 - **交付稳定二进制**：当前 Linux 二进制是**按 run 的 CI artifact**（默认留存 90 天）。Gateway CI 需长期可引用 → 打 **tag → GitHub Release**，给稳定下载 URL。
@@ -106,6 +106,39 @@
 **边界**：数据层安全 = 本服务本职（通用、可选、不调 LLM；Gateway 域盲做不了 RP 数据软删、State-Protocol 只管 UI）。在界内（见 §0）。
 **入口**：`src/mcp/tools.rs`（`handle_delete_character` ~113 等）+ 各 store 的 `delete`（`src/storage/`）+ `.trash` 路径助手。
 **退出标准**：删除后目标可在 `.trash` 找到并可恢复；`.trash` 不出现在任何 list / read 结果；**同名重删不互相覆盖**（碰撞安全）；默认保留期明确（如 7 天），清理路径确定（删除时 / 异步 / 手动）**且不阻塞 `initialize`**。
+
+### E · 代码审计发现（2026-06-29）← 候选，未排期
+
+> 来源：本轮对 `src/` 全量读码审计。下列各点**互相独立**、改动面小、不违 §0 判据（通用、非特供、不调 LLM）。按「收益 / 风险 / 改动量」综合排，前两条建议先做。
+
+**E.1 · list 输出排序不稳定**（建议先做）
+- **实证**：`CharacterStore::list`（`src/storage/character_store.rs:97-121`）直接遍历 `read_dir`，顺序由 FS 决定（平台 / 时刻不同即漂移）。`list_presets` / `list_scenes` 同构需查。
+- **为何该改**：§5 契约规约只钉「工具名不改」，但 list 输出**顺序漂移**会让下游 diff / 缓存误判「数据变了」—— 这正是 §2.C 想治的「下游复用难」的另一面。一行 `sort_by(|a,b| a.id.cmp(&b.id))` 即可固化，零风险。
+- **入口**：`src/storage/character_store.rs:97`、`src/storage/preset_store.rs`、`src/storage/mod.rs:70`（`list_scenes`）。
+- **退出标准**：同输入下 list 输出顺序确定、跨平台一致。
+
+**E.2 · `import_preset` 写入未走沙箱**（建议先做）
+- **实证**：`handle_import_preset`（`src/mcp/tools.rs:1358-1383`）直接 `tokio::fs::write(&self.storage.preset_json_path(preset_id), ...)`，**未走 `safe_resolve_for_write`**。`validate_id_segment(preset_id)` 已挡路径穿越字符、`preset_json_path` 是固定拼装，理论上安全 —— 但与同类写工具（`plugin_blob_write` / `plugin_jsonl_append` 均走沙箱）的纵深防御**不一致**。
+- **为何该改**：消除「这个写手为啥特殊」的认知负担，统一写入面的防御姿态；不改变现有行为（拼装路径本就在 base 内）。
+- **入口**：`src/mcp/tools.rs:1371`。
+- **退出标准**：所有写入工具统一经 `safe_resolve_for_write`；无行为回归。
+
+**E.3 · `constant_time_eq` 长度侧信道**
+- **实证**：`src/transport/http.rs:137-146` 在比较前 `if a.len() != b.len() { return false; }` 早返回 → 攻击者可逐字节探出 token 长度。函数注释自称「constant-time」但未名副其实。
+- **为何该改**：本地 LAN-trust 模型下风险低，但既然写了注释就该兑现；标准做法是补零到等长再走循环。
+- **入口**：`src/transport/http.rs:137`。
+- **退出标准**：比较耗时与公共长度无关（仅与 token 长度相关）；现有 bearer 测试全绿。
+
+**E.4 · `AirpError → ErrorData` 全归 `INTERNAL_ERROR`**
+- **实证**：`src/error.rs:41-49` 把 `CharacterNotFound` / `InvalidId` / `Validation` 这类**客户端错误**也映射为 `INTERNAL_ERROR`（MCP 规范属 server 错误码 `-32603`）。客户端难区分「我传错 ID」vs「服务端炸了」。
+- **为何该改**：改用更精确的 JSON-RPC 码（如 `InvalidRequest` `-32600` / `InvalidParams` `-32602`）改善客户端错误处理体验。**不违 §5 契约**（契约只约束工具 / 资源名 + 参数语义，错误码非契约面）。
+- **入口**：`src/error.rs:41`。
+- **退出标准**：客户端错误返客户端码、服务端错误返 `INTERNAL_ERROR`；现有 e2e / 集成测试断言不回归。
+
+**E.5 · `import_from_png` 的 `.parent().unwrap()` 风格不一致**（可选，纯整理）
+- **实证**：`src/storage/character_store.rs:55,62` 用 `lorebook_path.parent().unwrap()`，而其它写路径用 `if let Some(parent)`。`char_dir.join("world").join("lorebook.json")` 的 parent 必存在，unwrap 不会 panic —— 纯风格统一，无行为变化。
+- **入口**：`src/storage/character_store.rs:55,62`（及同文件 162、195 处类似）。
+- **退出标准**：写入前取 parent 的写法全仓一致。
 
 ---
 
@@ -151,6 +184,8 @@
 ---
 
 ## 6. 变更日志
+
+- **2026-06-29** 全量读码审计 → 新增 §2.E「代码审计发现」5 条独立候选：E.1 list 排序不稳定（建议先做）/ E.2 `import_preset` 未走沙箱（建议先做）/ E.3 `constant_time_eq` 长度侧信道 / E.4 错误码全归 `INTERNAL_ERROR` / E.5 `.parent().unwrap()` 风格不一致（可选）。各条均标实证位置 + 入口 + 退出标准。§3 已列的「入口尺寸 cap / 只读模式 / 优雅关停」不重复收录。HEAD 更新至 `3d4bded`。
 
 - **2026-06-15** 新增 [skills-vs-mcp.md](skills-vs-mcp.md)：skill=静态指导层 / MCP(AIRP)=动态数据层，互补非二选一。卡+预设可炼成 skill（治死人化隔离杠杆），但状态/历史/记忆/大世界关键词门控仍须 AIRP；完整 RP = 混合。§0.5 加参考文档清单。
 - **2026-06-15** 新增 [deployment-tavern-agent.md](deployment-tavern-agent.md)：酒馆前端 + MCP-agent 后端（agy2api/Antigravity 为例）+ AIRP 数据后端的部署拓扑 + 安全姿态（不可信卡 → AIRP 只读/软删、agent sandbox）。AIRP 零改动；强化 §2.D + §3 只读动机。§3 加指针行。后续补「酒馆瘦客户端」节（剥提示词 + 历史主从/死人化两坑）。
