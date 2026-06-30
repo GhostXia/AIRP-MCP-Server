@@ -2,7 +2,7 @@
 
 > **定位**：追踪「下一步做什么、为什么、以及**故意不做什么**」。不是功能介绍。
 > **真理顺序**：源码 > 本文档。冲突时先改文档再继续。
-> 最后更新：2026-06-29 · 当前 main = `3d4bded`
+> 最后更新：2026-06-29（HEAD 不在文档固化 —— 每次合并即过时；查 `git log` 为准）
 
 ## 0. 判据（动手前先过这条）
 
@@ -19,7 +19,7 @@
 
 ## 0.5 接力须知（给下一个 agent — 先读这条）
 
-- **仓库**：单 `main` 分支（`beta` 已于 2026-06-15 退役删除）。当前 `main = 3d4bded`。
+- **仓库**：单 `main` 分支（`beta` 已于 2026-06-15 退役删除）。当前 HEAD 查 `git log`（不在文档固化 commit，避免每次合并即过时）。
 - **本地不能编译 / 测试**：无 MSVC `link.exe`，GNU 工具链缺 `dlltool` → `cargo build`/`test` 本地必失败。**只做静态检查（`cargo fmt`、读码），推上去靠 CI 验证。** 别耗在本地编译。
 - **改动流程**：feature 分支 → commit → `git push` → `gh pr create --base main` → 等审查 bot → owner 授权 → `gh pr merge <n> --merge --delete-branch`。**直推 main 被安全分类器拦**，只能走授权 PR。
 - **工具**：`gh` 已装已认证（建/合 PR、`gh run view <id> --log-failed` 读 CI 日志）。PowerShell 下**别对 gh/git 加 `2>&1`**（NativeCommandError + spinner 噪音会撑爆输出）；gh 一律 `--json`。多行 commit 用多个 `-m`，别写 `.git/*.txt` 临时文件。
