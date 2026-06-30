@@ -30,7 +30,7 @@
   - 传输：`src/transport/`（`stdio.rs` / `http.rs`；HTTP 测试在 `http.rs` 的 `#[cfg(test)]`，跨进程 e2e 在 `tests/stdio_e2e.rs`）。
   - 拼装：工具 `build_scene_system_prompt` / `export_context_bundle`（Rust handler 为 `handle_*`，均在 `tools.rs`）。
 - **三产品分工**：MCP-Server = 数据层（本仓）；Gateway = 协议桥（限流/鉴权/缓存等边缘）；State-Protocol = UI 渲染契约。功能该落谁，先按这条 + §0 判据。
-- **相关参考文档**（设计/部署思路，非功能承诺）：[prompt-caching.md](prompt-caching.md)（缓存归边缘 + 中性标记）、[deployment-tavern-agent.md](deployment-tavern-agent.md)（酒馆前端 + agent 后端 + 瘦客户端模式）、[skills-vs-mcp.md](skills-vs-mcp.md)（skill=静态层 / MCP=动态层，混合）。
+- **相关参考文档**（设计/部署思路，非功能承诺）：[configuration.md](configuration.md)（**可定制项**：CLI/env/硬编点）、[prompt-caching.md](prompt-caching.md)（缓存归边缘 + 中性标记）、[deployment-tavern-agent.md](deployment-tavern-agent.md)（酒馆前端 + agent 后端 + 瘦客户端模式）、[skills-vs-mcp.md](skills-vs-mcp.md)（skill=静态层 / MCP=动态层，混合）。
 
 ---
 
@@ -184,6 +184,8 @@
 ---
 
 ## 6. 变更日志
+
+- **2026-06-29** 新增 [configuration.md](configuration.md)：列出可定制项 —— CLI（`mcp`/`serve` + `--data-dir`/`--bind`）、env（`AIRP_HTTP_TOKEN` / `AIRP_MAX_READ_BYTES` / `RUST_LOG`）、硬编点（`MAX_PNG_BYTES` / host 校验关 / CORS / 协议版本）、以及「RP 数据才是主定制面」。§0.5 加链。
 
 - **2026-06-29** 全量读码审计 → 新增 §2.E「代码审计发现」5 条独立候选：E.1 list 排序不稳定（建议先做）/ E.2 `import_preset` 未走沙箱（建议先做）/ E.3 `constant_time_eq` 长度侧信道 / E.4 错误码全归 `INTERNAL_ERROR` / E.5 `.parent().unwrap()` 风格不一致（可选）。各条均标实证位置 + 入口 + 退出标准。§3 已列的「入口尺寸 cap / 只读模式 / 优雅关停」不重复收录。HEAD 更新至 `3d4bded`。
 
