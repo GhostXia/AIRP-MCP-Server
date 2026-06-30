@@ -19,7 +19,7 @@
 
 ## 0.5 接力须知（给下一个 agent — 先读这条）
 
-- **仓库**：单 `main` 分支（`beta` 已于 2026-06-15 退役删除）。当前 `main = d0ece52`。
+- **仓库**：单 `main` 分支（`beta` 已于 2026-06-15 退役删除）。当前 `main = 3d4bded`。
 - **本地不能编译 / 测试**：无 MSVC `link.exe`，GNU 工具链缺 `dlltool` → `cargo build`/`test` 本地必失败。**只做静态检查（`cargo fmt`、读码），推上去靠 CI 验证。** 别耗在本地编译。
 - **改动流程**：feature 分支 → commit → `git push` → `gh pr create --base main` → 等审查 bot → owner 授权 → `gh pr merge <n> --merge --delete-branch`。**直推 main 被安全分类器拦**，只能走授权 PR。
 - **工具**：`gh` 已装已认证（建/合 PR、`gh run view <id> --log-failed` 读 CI 日志）。PowerShell 下**别对 gh/git 加 `2>&1`**（NativeCommandError + spinner 噪音会撑爆输出）；gh 一律 `--json`。多行 commit 用多个 `-m`，别写 `.git/*.txt` 临时文件。
@@ -112,9 +112,9 @@
 > 来源：本轮对 `src/` 全量读码审计。下列各点**互相独立**、改动面小、不违 §0 判据（通用、非特供、不调 LLM）。按「收益 / 风险 / 改动量」综合排，前两条建议先做。
 
 **E.1 · list 输出排序不稳定**（建议先做）
-- **实证**：`CharacterStore::list`（`src/storage/character_store.rs:97-121`）直接遍历 `read_dir`，顺序由 FS 决定（平台 / 时刻不同即漂移）。`list_presets` / `list_scenes` 同构需查。
+- **实证**：`CharacterStore::list`（`src/storage/character_store.rs:97-121`）与 `PresetStore::list`（`src/storage/preset_store.rs:46`）直接遍历 `read_dir`，顺序由 FS 决定（平台 / 时刻不同即漂移）。**注**：`Storage::list_scenes`（`mod.rs:92` 已 `result.sort()`）与 `Storage::list_presets`（`mod.rs:128` 用 `BTreeSet`）天然有序，**无此问题**，勿误查。
 - **为何该改**：§5 契约规约只钉「工具名不改」，但 list 输出**顺序漂移**会让下游 diff / 缓存误判「数据变了」—— 这正是 §2.C 想治的「下游复用难」的另一面。一行 `sort_by(|a,b| a.id.cmp(&b.id))` 即可固化，零风险。
-- **入口**：`src/storage/character_store.rs:97`、`src/storage/preset_store.rs`、`src/storage/mod.rs:70`（`list_scenes`）。
+- **入口**：`src/storage/character_store.rs:97`、`src/storage/preset_store.rs:46`（仅此二者需补 `sort`）。
 - **退出标准**：同输入下 list 输出顺序确定、跨平台一致。
 
 **E.2 · `import_preset` 写入未走沙箱**（建议先做）
@@ -125,9 +125,9 @@
 
 **E.3 · `constant_time_eq` 长度侧信道**
 - **实证**：`src/transport/http.rs:137-146` 在比较前 `if a.len() != b.len() { return false; }` 早返回 → 攻击者可逐字节探出 token 长度。函数注释自称「constant-time」但未名副其实。
-- **为何该改**：本地 LAN-trust 模型下风险低，但既然写了注释就该兑现；标准做法是补零到等长再走循环。
+- **为何该改**：本地 LAN-trust 模型下风险低，但既然写了注释就该兑现；标准做法是**用随机密钥对输入与真 token 各算 HMAC-SHA256，再对两段定长摘要做恒定时间比较** —— 彻底消除长度侧信道，免去补零截断的绕。
 - **入口**：`src/transport/http.rs:137`。
-- **退出标准**：比较耗时与公共长度无关（仅与 token 长度相关）；现有 bearer 测试全绿。
+- **退出标准**：比较耗时与输入长度及 token 长度**均无关**；现有 bearer 测试全绿。
 
 **E.4 · `AirpError → ErrorData` 全归 `INTERNAL_ERROR`**
 - **实证**：`src/error.rs:41-49` 把 `CharacterNotFound` / `InvalidId` / `Validation` 这类**客户端错误**也映射为 `INTERNAL_ERROR`（MCP 规范属 server 错误码 `-32603`）。客户端难区分「我传错 ID」vs「服务端炸了」。
