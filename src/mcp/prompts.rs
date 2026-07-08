@@ -614,7 +614,10 @@ source preset is permanent and reused every turn (cheap, high-leverage). Do NOT
 post-process the generated text.
 
 ## Steps
-1. Read the current preset: `airp://presets/{pid}/raw`
+1. Read the current preset: `airp://presets/{pid}/raw`. Note: this is capped
+   at ~32 KiB by `AIRP_MAX_READ_BYTES`; if you see a `[PARTIAL: ...]` marker,
+   the preset is larger — use `decompose_preset` for structured access instead
+   of paging through the raw JSON.
 2. Diagnose what in the preset causes the complaint. Common culprits:
    - **Stiff / lifeless prose** on a strong model: the preset may carry
      model-specific suppression (anti-verbosity, anti-divergence, anti-refusal
@@ -624,9 +627,19 @@ post-process the generated text.
      pacing instruction in `system_prompt_prefix` or `system_prompt_suffix`.
    - No voice anchors → ensure the character card's dialogue examples are used
      (build_scene_system_prompt supports `style_enhance: true`).
-3. Apply the minimal change. Write it back with `import_preset` (full JSON) —
-   keep every field you are not changing.
-4. Report exactly what you changed and why, so the user can judge / revert.
+3. Apply the minimal change. Write the modified full preset JSON to a file,
+   then import it back with `import_preset(preset_id={pid}, preset_path=<file>)`
+   — keep every field you are not changing. Prefer `preset_path` over
+   `preset_json`: the full JSON can exceed JSON-RPC request-body limits in
+   clients like Claude Desktop, and `preset_path` keeps the content out of
+   the model context.
+4. **Verify by diff, not by re-reading raw**: after `import_preset` succeeds,
+   confirm the change by reading the specific field you edited (e.g.
+   `airp://presets/{{pid}}/artifacts` for artifact-level checks) or by
+   re-running the scene. Do NOT re-read `airp://presets/{pid}/raw` to
+   "confirm" — on large presets it will be truncated and you may misjudge
+   the result, leading to a pointless rewrite loop.
+5. Report exactly what you changed and why, so the user can judge / revert.
 
 ## Boundaries
 - Change only what the feedback implies. Do not rewrite the whole preset.

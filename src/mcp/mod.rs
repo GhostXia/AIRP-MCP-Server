@@ -37,6 +37,44 @@ pub(crate) fn max_read_bytes() -> usize {
     })
 }
 
+/// Truncate content destined for the model context, with a `[PARTIAL: ...]`
+/// marker so the caller knows there is more. Used by resource reads
+/// (character card, lorebook, preset raw, plugin data) to keep a single read
+/// from blowing the token budget.
+///
+/// Char-boundary safe: never splits a multi-byte UTF-8 sequence.
+///
+/// Resources do NOT support offset-based paging — the `[PARTIAL]` marker
+/// directs callers to structured-access tools (`decompose_character` /
+/// `decompose_preset`) instead.
+pub(crate) fn truncate_for_context(content: &str) -> String {
+    truncate_with_notice(
+        content,
+        "content exceeds single-read cap; use decompose_character / decompose_preset for structured access",
+    )
+}
+
+/// Like `truncate_for_context` but with a caller-supplied notice in the
+/// `[PARTIAL]` marker. Used by `read_plugin_data` which needs to point at
+/// `plugin_blob_read` instead of the character/preset decompose tools.
+pub(crate) fn truncate_with_notice(content: &str, notice: &str) -> String {
+    let max_len = max_read_bytes();
+    if content.len() <= max_len {
+        return content.to_string();
+    }
+    let mut end = max_len;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "[PARTIAL: total={}, limit={} — {}]\n{}",
+        content.len(),
+        end,
+        notice,
+        &content[..end]
+    )
+}
+
 #[derive(Clone)]
 pub struct AirpMcpServer {
     pub storage: Arc<Storage>,
@@ -556,17 +594,17 @@ impl ServerHandler for AirpMcpServer {
 fn import_card_tool() -> Tool {
     Tool::new(
         "import_card",
-        "Import a character card from a PNG. Provide exactly one of: png_path (RECOMMENDED — server reads the file directly, so the base64 never enters the model context and cannot burn tokens) or png_base64. Input capped at 10 MiB.",
+        "Import a character card from a PNG. Supports both V2 (chara chunk) and V3 (ccv3 chunk) character cards; V3 character_book lorebook entries are extracted automatically. Provide exactly one of: png_path (RECOMMENDED — server reads the file directly, so the base64 never enters the model context and cannot burn tokens; no size cap) or png_base64 (capped at 10 MiB).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
                 "png_path": {
                     "type": "string",
-                    "description": "Filesystem path to the PNG. Preferred: AIRP reads + decodes it server-side (no base64 in context). Read server-side — keep the HTTP transport on a trusted LAN."
+                    "description": "Filesystem path to the PNG. Preferred: AIRP reads + decodes it server-side (no base64 in context, no size limit). Read server-side — keep the HTTP transport on a trusted LAN."
                 },
                 "png_base64": {
                     "type": "string",
-                    "description": "Base64-encoded PNG. Use only when the file is not reachable by path; encoding a large card into base64 floods the model context."
+                    "description": "Base64-encoded PNG. Use only when the file is not reachable by path; encoding a large card into base64 floods the model context. Capped at 10 MiB."
                 }
             }
         })),
@@ -721,7 +759,7 @@ fn get_recent_context_tool() -> Tool {
 fn import_preset_tool() -> Tool {
     Tool::new(
         "import_preset",
-        "Import a SillyTavern preset JSON. Writes to presets/{preset_id}/preset.json.",
+        "Import a SillyTavern preset JSON. Writes to presets/{preset_id}/preset.json. Provide exactly one of: preset_path (RECOMMENDED — server reads the file directly, so the preset content never enters the model context and bypasses JSON-RPC request-body size limits; no size cap) or preset_json (capped at 64 MiB).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
@@ -731,10 +769,14 @@ fn import_preset_tool() -> Tool {
                 },
                 "preset_json": {
                     "type": "string",
-                    "description": "Full SillyTavern preset JSON content"
+                    "description": "Full SillyTavern preset JSON content. Use only when the file is not reachable by path; large presets sent through JSON-RPC may hit client-side request-body caps."
+                },
+                "preset_path": {
+                    "type": "string",
+                    "description": "Filesystem path to the preset JSON file. Preferred: AIRP reads it server-side (no content in model context, no request-body limit)."
                 }
             },
-            "required": ["preset_id", "preset_json"]
+            "required": ["preset_id"]
         })),
     )
 }
@@ -1118,7 +1160,7 @@ fn apply_lorebook_tool() -> Tool {
 fn update_lorebook_tool() -> Tool {
     Tool::new(
         "update_lorebook",
-        "Update lorebook entries for a character",
+        "Update lorebook entries for a character. Provide exactly one of: lorebook_path (RECOMMENDED — server reads the file directly, so the lorebook content never enters the model context and bypasses JSON-RPC request-body size limits; no size cap; accepts SillyTavern world book JSON with entries as array or object map) or entries (inline JSON array).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
@@ -1128,13 +1170,17 @@ fn update_lorebook_tool() -> Tool {
                 },
                 "entries": {
                     "type": "array",
-                    "description": "Lorebook entries",
+                    "description": "Lorebook entries (inline JSON). Use only when the file is not reachable by path; large lorebooks sent through JSON-RPC may hit client-side request-body caps.",
                     "items": {
                         "type": "object"
                     }
+                },
+                "lorebook_path": {
+                    "type": "string",
+                    "description": "Filesystem path to a SillyTavern lorebook JSON file. Preferred: AIRP reads it server-side (no content in model context, no request-body limit). Accepts {\"entries\": [...]} or {\"entries\": {\"0\": {...}}} forms."
                 }
             },
-            "required": ["character_id", "entries"]
+            "required": ["character_id"]
         })),
     )
 }
@@ -1296,4 +1342,54 @@ fn rollback_messages_tool() -> Tool {
             "required": ["character_id", "session_id"]
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_under_cap_returns_unchanged() {
+        let content = "short content";
+        assert_eq!(truncate_for_context(content), content);
+    }
+
+    #[test]
+    fn truncate_over_cap_adds_partial_marker() {
+        let large = "x".repeat(max_read_bytes() + 100);
+        let result = truncate_for_context(&large);
+        assert!(
+            result.starts_with("[PARTIAL:"),
+            "oversized content should get [PARTIAL] marker: {}",
+            &result[..40]
+        );
+        assert!(result.contains("limit="));
+        // Truncated content should be shorter than the original.
+        assert!(result.len() < large.len() + 200); // +200 for the marker line
+    }
+
+    #[test]
+    fn truncate_char_boundary_safe() {
+        // Multi-byte UTF-8: '€' is 3 bytes. Fill to just over the cap with
+        // multi-byte chars so the boundary falls inside a char.
+        let cap = max_read_bytes();
+        let euro = "€"; // 3 bytes
+        let mut content = String::new();
+        while content.len() <= cap {
+            content.push_str(euro);
+        }
+        let result = truncate_for_context(&content);
+        assert!(result.starts_with("[PARTIAL:"));
+        // The truncated portion (after the marker line) must be valid UTF-8.
+        let truncated_part = result.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert!(std::str::from_utf8(truncated_part.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_with_notice_uses_custom_message() {
+        let large = "y".repeat(max_read_bytes() + 10);
+        let result = truncate_with_notice(&large, "custom hint text");
+        assert!(result.contains("custom hint text"));
+        assert!(!result.contains("decompose_character"));
+    }
 }

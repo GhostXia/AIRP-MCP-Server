@@ -115,7 +115,9 @@ AIRP 的角色：
 ```
 import_card(png_path="./card/角色.png")    # 推荐：服务端读盘，base64 不进上下文
 ```
-> ⚠️ **别自己 Read PNG 再 base64**：一张 10 MiB 卡 ≈ 13 MiB base64 文本灌进上下文，**烧光 token**（社区实测「蓝屏级卡死」）。用 `png_path` 让 AIRP 服务端读+解析；仅当文件路径不可达时才退回 `png_base64`。
+> ⚠️ **别自己 Read PNG 再 base64**：一张 10 MiB 卡 ≈ 13 MiB base64 文本灌进上下文，**烧光 token**（社区实测「蓝屏级卡死」）。用 `png_path` 让 AIRP 服务端读+解析（无大小限制）；仅当文件路径不可达时才退回 `png_base64`（≤ 10 MiB）。
+>
+> `_path` 参数（`png_path`/`preset_path`/`lorebook_path`）的路径基准是 **AIRP 服务端进程的 cwd**，支持相对路径和绝对路径。
 
 如果没有角色卡，用 `list_characters()` 查看已有卡片。
 
@@ -200,8 +202,10 @@ apply_lorebook(character_id, text="我们在天剑阁门前停下")
 
 ### 更新世界书
 ```
-update_lorebook(character_id, entries=[{id, name, keys, content, enabled, ...}])
+update_lorebook(character_id="凌欺霜", lorebook_path="/path/to/world_book.json")   # 推荐：服务端读盘，JSON 不进上下文
+update_lorebook(character_id="凌欺霜", entries=[{id, name, keys, content, enabled, ...}])   # 退回：内联 JSON
 ```
+> ⚠️ **别把整本世界书当 `entries` 数组塞进上下文**：SillyTavern 世界书常有几十~几百条目，几十~几百 KB；走 `entries` 会原样进模型上下文，且 JSON-RPC 请求体在 Claude Desktop 等客户端有较低上限。用 `lorebook_path` 让 AIRP 服务端直接读文件，内容**不进上下文、无大小限制**，兼容 SillyTavern 的 `{entries: {...}}` 和 `{entries: [...]}` 两种格式；仅当文件路径不可达时才退回 `entries`。
 
 ---
 
@@ -243,9 +247,10 @@ update_state(character_id, state_delta={
 
 ### 导入第三方预设
 ```
-import_preset(preset_id="LENI", preset_json="<完整JSON>")
+import_preset(preset_id="LENI", preset_path="/path/to/LENI.json")   # 推荐：服务端读盘，JSON 不进上下文
 → 写入 presets/LENI/preset.json
 ```
+> ⚠️ **别把完整预设 JSON 当字符串塞进 `preset_json`**：SillyTavern 预设常含大量 prompt + 正则，几十~几百 KB；走 `preset_json` 会原样进模型上下文，且 JSON-RPC 请求体在 Claude Desktop 等客户端有较低上限（会被拒或截断）。用 `preset_path` 让 AIRP 服务端直接读文件，预设内容**不进上下文、无大小限制**；仅当文件路径不可达时才退回 `preset_json`（≤ 64 MiB）。
 
 ### 分析预设
 ```
@@ -386,7 +391,7 @@ decompose_character(character_id, target_dir="./decomposed")
 
 ### 11.2 预设分析完整流程
 ```
-1. import_preset(preset_id, preset_json)
+1. import_preset(preset_id, preset_path="/path/to/preset.json")   # 推荐：preset_path，避免 JSON 灌进上下文
 2. 读 analyze_preset("LENI") prompt → 获取 3 步 workflow
 3. 读 airp://presets/LENI/raw → 获取原始 JSON
 4. write_preset_artifact(...) × 3 → 写入分析产物
@@ -418,13 +423,13 @@ rollback_messages(character_id, session_id, n=3)
 | 会话 | `get_recent_context` | character_id, session_id, n? |
 | 会话 | `rollback_messages` | character_id, session_id, n? |
 | 世界书 | `apply_lorebook` | character_id, text |
-| 世界书 | `update_lorebook` | character_id, entries |
+| 世界书 | `update_lorebook` | character_id, lorebook_path（推荐）/ entries |
 | 状态 | `get_live_state` | character_id |
 | 状态 | `update_state` | character_id, state_delta |
 | 卷 | `seal_volume` | character_id, session_id, clear_session? |
 | 预设 | `list_presets` | — |
 | 预设 | `get_preset` | preset_id |
-| 预设 | `import_preset` | preset_id, preset_json |
+| 预设 | `import_preset` | preset_id, preset_path（推荐）/ preset_json |
 | 预设 | `write_preset_artifact` | preset_id, artifact_path, content |
 | 预设 | `list_preset_regex_scripts` | preset_id |
 | 预设 | `remove_preset_regex_script` | preset_id, filename |
@@ -451,16 +456,16 @@ rollback_messages(character_id, session_id, n=3)
 | URI | 内容 |
 |:--|:--|
 | `airp://characters` | 角色 ID 列表 |
-| `airp://characters/{id}/card` | 角色卡完整 JSON |
+| `airp://characters/{id}/card` | 角色卡完整 JSON（⚠️ 超 `AIRP_MAX_READ_BYTES` 默认 32 KiB 会截断，带 `[PARTIAL: ...]` 标记；大卡用 `decompose_character` 拿结构化摘要） |
 | `airp://characters/{id}/greetings` | 开场语库 |
-| `airp://characters/{id}/world/lorebook` | 世界书 |
+| `airp://characters/{id}/world/lorebook` | 世界书（⚠️ 同上截断；大世界书用 `apply_lorebook` 拿匹配子集） |
 | `airp://characters/{id}/state/live` | 实时状态 |
 | `airp://characters/{id}/memory/current` | 当前记忆 |
 | `airp://characters/{id}/memory/index` | 卷索引 |
 | `airp://characters/{id}/memory/volumes/{n}` | 归档卷 (n="latest" = 最新) |
 | `airp://presets` | 预设 ID 列表 |
 | `airp://presets/{id}` | 预设详情 |
-| `airp://presets/{id}/raw` | 预设原始 JSON |
+| `airp://presets/{id}/raw` | 预设原始 JSON（⚠️ 同上截断；大预设用 `decompose_preset` 拿结构化摘要） |
 | `airp://presets/{id}/artifacts` | 预设分析产物树 |
 | `airp://presets/{id}/regex` | 预设正则脚本 |
 | `airp://scenes` | 场景列表 |
@@ -686,7 +691,7 @@ add_character_to_scene(scene_id, character_id, role, intro) → 添加角色
 
 ```
 用户导入第三个预设:
-  import_preset("LENI", preset_json)
+  import_preset("LENI", preset_path="/path/to/LENI.json")   # 推荐：preset_path，避免 JSON 灌进上下文
     ↓
 验证预设是否正常:
   read prompt: validate_preset("LENI")

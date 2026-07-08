@@ -118,9 +118,9 @@
 - **退出标准**：同输入下 list 输出顺序确定、跨平台一致。
 
 **E.2 · `import_preset` 写入未走沙箱**（建议先做）
-- **实证**：`handle_import_preset`（`src/mcp/tools.rs:1358-1383`）直接 `tokio::fs::write(&self.storage.preset_json_path(preset_id), ...)`，**未走 `safe_resolve_for_write`**。`validate_id_segment(preset_id)` 已挡路径穿越字符、`preset_json_path` 是固定拼装，理论上安全 —— 但与同类写工具（`plugin_blob_write` / `plugin_jsonl_append` 均走沙箱）的纵深防御**不一致**。
+- **实证**：`handle_import_preset`（`src/mcp/tools.rs:1358-1444`）直接 `tokio::fs::write(&self.storage.preset_json_path(preset_id), ...)`，**未走 `safe_resolve_for_write`**。`validate_id_segment(preset_id)` 已挡路径穿越字符、`preset_json_path` 是固定拼装，理论上安全 —— 但与同类写工具（`plugin_blob_write` / `plugin_jsonl_append` 均走沙箱）的纵深防御**不一致**。Issue #28 新增的 `preset_path` 读取（`tokio::fs::metadata` / `tokio::fs::read`，~1391-1407）同样未走沙箱——但用户读自己的文件不算越权，写入面仍是本条关注点。
 - **为何该改**：消除「这个写手为啥特殊」的认知负担，统一写入面的防御姿态；不改变现有行为（拼装路径本就在 base 内）。
-- **入口**：`src/mcp/tools.rs:1371`。
+- **入口**：`src/mcp/tools.rs:1359`。
 - **退出标准**：所有写入工具统一经 `safe_resolve_for_write`；无行为回归。
 
 **E.3 · `constant_time_eq` 长度侧信道**
@@ -152,7 +152,7 @@
 | **可观测性** | 生产部署 / 排障需要时 | 结构化日志已具；按需加请求级 tracing / 指标。**不为加而加** |
 | **健康/就绪探针** | 容器/编排部署时 | 已有 `/health`；需要时加 `/ready` |
 | **协议版本随 rmcp 升级** | rmcp 出新版 | 已吃 `LATEST`，自动跟进；只需确认 `min` 协商对新版仍成立 |
-| **入口尺寸 cap 补全** | 关注 stdio OOM 面时 | stdio 帧无上限、`import_preset`/`plugin_blob_write` 无显式字节 cap（HTTP 有 axum 默认 ~2MB、import_card 有 10MiB、serde 递归 128 已兜底） |
+| **入口尺寸 cap 补全** | 关注 stdio OOM 面时 | stdio 帧无上限、`plugin_blob_write` 无显式字节 cap（HTTP 有 axum 默认 ~2MB、`import_card` 的 `png_base64` 有 10 MiB cap 但 `png_path` 无限制、`import_preset` 的 `preset_json` 有 64 MiB cap 但 `preset_path` 无限制、`update_lorebook` 的 `lorebook_path` 无限制——所有 `_path` 参数内容不进模型上下文、用户读自己的文件、serde 递归 128 已兜底）。**读取端统一截断**：`read_character_card` / `read_character_lorebook` / `read_preset_raw` 均走 `truncate_for_context`（`AIRP_MAX_READ_BYTES` 默认 32 KiB，超限带 `[PARTIAL: ...]` 标记） |
 | **酒馆前端 + agent 后端部署** | 想用 SillyTavern 当前端、agent 当后端跑 RP 时 | AIRP 零改动即可当 agent 的 MCP 数据后端（agy 走 stdio/streamable-http 均可）。设计 + 安全姿态见 [deployment-tavern-agent.md](deployment-tavern-agent.md)。**不可信卡场景：agent 应 sandbox；AIRP 当前用隔离 data-dir + 路径沙箱（已有），只读/软删待 §2.D+§3 落地**（此用法强化其动机） |
 
 ---

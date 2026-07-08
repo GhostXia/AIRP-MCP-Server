@@ -180,24 +180,13 @@ impl AirpMcpServer {
                 "file is not valid UTF-8; use plugin_blob_read tool for binary".into(),
             )
         })?;
-        // Cap content returned into the model context. Mirrors read_preset_raw:
-        // truncate oversized files with a [PARTIAL: ...] marker instead of
-        // dumping the whole file and burning the token budget.
-        let max_len = crate::mcp::max_read_bytes();
-        if content.len() > max_len {
-            let mut end = max_len;
-            while end > 0 && !content.is_char_boundary(end) {
-                end -= 1;
-            }
-            Ok(format!(
-                "[PARTIAL: total={}, offset=0, limit={} — file exceeds single-read cap; use plugin_blob_read or read from filesystem directly for full content]\n{}",
-                content.len(),
-                end,
-                &content[..end]
-            ))
-        } else {
-            Ok(content)
-        }
+        // Cap content returned into the model context. Uses the shared
+        // truncation helper with a plugin-specific notice pointing at
+        // plugin_blob_read for full binary/large content access.
+        Ok(crate::mcp::truncate_with_notice(
+            &content,
+            "file exceeds single-read cap; use plugin_blob_read for full content",
+        ))
     }
 
     async fn read_characters_list(&self) -> Result<String> {
@@ -223,7 +212,11 @@ impl AirpMcpServer {
         let store = CharacterStore::new(&self.storage);
         let character = store.get(&id).await?;
 
-        serde_json::to_string_pretty(&character.card).map_err(Into::into)
+        let json = serde_json::to_string_pretty(&character.card)?;
+        // Cap: a V3 card with embedded assets / long description can be tens
+        // of KiB; truncate before it enters the model context. Use
+        // decompose_character for structured access.
+        Ok(crate::mcp::truncate_for_context(&json))
     }
 
     async fn read_character_greetings(&self, character_id: &str) -> Result<String> {
@@ -248,7 +241,11 @@ impl AirpMcpServer {
         let store = CharacterStore::new(&self.storage);
         let lorebook = store.get_lorebook(&id).await?;
 
-        serde_json::to_string_pretty(&lorebook).map_err(Into::into)
+        let json = serde_json::to_string_pretty(&lorebook)?;
+        // Cap: a SillyTavern world book can have hundreds of entries; truncate
+        // before it enters the model context. Use apply_lorebook to get only
+        // the matching subset.
+        Ok(crate::mcp::truncate_for_context(&json))
     }
 
     async fn read_character_live_state(&self, character_id: &str) -> Result<String> {
@@ -388,19 +385,10 @@ impl AirpMcpServer {
 
         let raw = tokio::fs::read_to_string(&path).await?;
         let cleaned = crate::storage::strip_utf8_bom(&raw);
-
-        let max_len = 100_000;
-        if cleaned.len() > max_len {
-            let truncated = &cleaned[..max_len];
-            Ok(format!(
-                "[PARTIAL: total={}, offset=0, limit={} — increase limit query param for more]\n{}",
-                cleaned.len(),
-                max_len,
-                truncated
-            ))
-        } else {
-            Ok(cleaned.to_string())
-        }
+        // Cap content returned into the model context. Mirrors plugin blob
+        // reads: truncate oversized files with a [PARTIAL: ...] marker instead
+        // of dumping the whole preset and burning the token budget.
+        Ok(crate::mcp::truncate_for_context(cleaned))
     }
 
     async fn read_preset_artifacts(&self, preset_id: &str) -> Result<String> {
