@@ -180,24 +180,13 @@ impl AirpMcpServer {
                 "file is not valid UTF-8; use plugin_blob_read tool for binary".into(),
             )
         })?;
-        // Cap content returned into the model context. Mirrors read_preset_raw:
-        // truncate oversized files with a [PARTIAL: ...] marker instead of
-        // dumping the whole file and burning the token budget.
-        let max_len = crate::mcp::max_read_bytes();
-        if content.len() > max_len {
-            let mut end = max_len;
-            while end > 0 && !content.is_char_boundary(end) {
-                end -= 1;
-            }
-            Ok(format!(
-                "[PARTIAL: total={}, offset=0, limit={} — file exceeds single-read cap; use plugin_blob_read or read from filesystem directly for full content]\n{}",
-                content.len(),
-                end,
-                &content[..end]
-            ))
-        } else {
-            Ok(content)
-        }
+        // Cap content returned into the model context. Uses the shared
+        // truncation helper with a plugin-specific notice pointing at
+        // plugin_blob_read for full binary/large content access.
+        Ok(crate::mcp::truncate_with_notice(
+            &content,
+            "file exceeds single-read cap; use plugin_blob_read for full content",
+        ))
     }
 
     async fn read_characters_list(&self) -> Result<String> {

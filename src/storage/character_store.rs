@@ -312,9 +312,7 @@ fn parse_v3_json(json_bytes: &[u8]) -> Result<(CharacterCard, Option<Lorebook>)>
     let data_obj = value
         .get("data")
         .and_then(|d| d.as_object())
-        .ok_or_else(|| {
-            AirpError::PngParse("V3 card missing 'data' object".to_string())
-        })?;
+        .ok_or_else(|| AirpError::PngParse("V3 card missing 'data' object".to_string()))?;
 
     parse_wrapped_card(data_obj, true)
 }
@@ -360,40 +358,46 @@ fn parse_wrapped_card(
 pub fn extract_lorebook(value: &serde_json::Value) -> Result<Lorebook> {
     // The V2/V3 lorebook has `entries` as either an array or an object map
     // (SillyTavern uses an object keyed by entry ID in some versions).
-    let lorebook: Lorebook = if let Some(entries_array) = value.get("entries").and_then(|e| e.as_array()) {
-        // Array form: parse each entry directly.
-        let mut entries = Vec::with_capacity(entries_array.len());
-        for entry_val in entries_array {
-            entries.push(normalize_lorebook_entry(entry_val)?);
-        }
-        Lorebook { entries }
-    } else if let Some(entries_obj) = value.get("entries").and_then(|e| e.as_object()) {
-        // Object form (SillyTavern): keys are entry IDs; merge ID into each entry.
-        let mut entries = Vec::with_capacity(entries_obj.len());
-        for (id, entry_val) in entries_obj {
-            let mut entry = normalize_lorebook_entry(entry_val)?;
-            // Ensure the entry has an ID — use the map key if the entry lacks one.
-            if entry.id.is_empty() {
-                entry.id = id.clone();
+    let lorebook: Lorebook =
+        if let Some(entries_array) = value.get("entries").and_then(|e| e.as_array()) {
+            // Array form: parse each entry directly.
+            let mut entries = Vec::with_capacity(entries_array.len());
+            for entry_val in entries_array {
+                entries.push(normalize_lorebook_entry(entry_val)?);
             }
-            entries.push(entry);
-        }
-        Lorebook { entries }
-    } else {
-        // Try direct deserialization as a fallback.
-        serde_json::from_value(value.clone())
-            .map_err(|e| AirpError::PngParse(format!("Invalid character_book format: {}", e)))?
-    };
+            Lorebook { entries }
+        } else if let Some(entries_obj) = value.get("entries").and_then(|e| e.as_object()) {
+            // Object form (SillyTavern): keys are entry IDs; merge ID into each entry.
+            let mut entries = Vec::with_capacity(entries_obj.len());
+            for (id, entry_val) in entries_obj {
+                let mut entry = normalize_lorebook_entry(entry_val)?;
+                // Ensure the entry has an ID — use the map key if the entry lacks one.
+                if entry.id.is_empty() {
+                    entry.id = id.clone();
+                }
+                entries.push(entry);
+            }
+            Lorebook { entries }
+        } else {
+            // Try direct deserialization as a fallback.
+            serde_json::from_value(value.clone())
+                .map_err(|e| AirpError::PngParse(format!("Invalid character_book format: {}", e)))?
+        };
 
     Ok(lorebook)
 }
 
 /// Normalize a V2/V3 lorebook entry JSON into AIRP's `LorebookEntry`.
 ///
-/// SillyTavern V2/V3 entries use `comment` as the display name (AIRP uses
-/// `name`), and may have `constant`, `selective`, `secondary_keys`,
-/// `position` fields. We handle the `comment` → `name` mapping while letting
-/// serde handle the rest (with `#[serde(default)]` on optional fields).
+/// SillyTavern V2/V3 entries use different field names than AIRP's
+/// `LorebookEntry`:
+///   - `comment` → `name` (display name; AIRP's `build_context` uses `name`)
+///   - `disable` → `enabled` (inverted: `disable: true` means `enabled: false`)
+///   - `key`, `keysecondary`, `order`, `caseSensitive` are handled via
+///     `#[serde(alias = ...)]` on the struct.
+///
+/// We also backfill a missing `id` (the ID is the map key in object-form
+/// entries).
 fn normalize_lorebook_entry(value: &serde_json::Value) -> Result<LorebookEntry> {
     let mut val = value.clone();
 
@@ -403,6 +407,14 @@ fn normalize_lorebook_entry(value: &serde_json::Value) -> Result<LorebookEntry> 
         // on the missing required field; the caller fills it from the map key.
         if !obj.contains_key("id") {
             obj.insert("id".to_string(), serde_json::Value::String(String::new()));
+        }
+
+        // Map `disable` → `enabled` (inverted). Only applies when `enabled`
+        // is absent — if both are present, `enabled` takes precedence.
+        if !obj.contains_key("enabled") {
+            if let Some(disable) = obj.get("disable").and_then(|d| d.as_bool()) {
+                obj.insert("enabled".to_string(), serde_json::Value::Bool(!disable));
+            }
         }
 
         // If the entry has a `comment` but no `name`, copy comment → name so the

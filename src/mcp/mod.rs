@@ -38,12 +38,26 @@ pub(crate) fn max_read_bytes() -> usize {
 }
 
 /// Truncate content destined for the model context, with a `[PARTIAL: ...]`
-/// marker so the caller knows there is more to page. Used by resource reads
-/// (character card, lorebook, preset raw) to keep a single read from blowing
-/// the token budget — mirrors the cap already applied to plugin blob reads.
+/// marker so the caller knows there is more. Used by resource reads
+/// (character card, lorebook, preset raw, plugin data) to keep a single read
+/// from blowing the token budget.
 ///
 /// Char-boundary safe: never splits a multi-byte UTF-8 sequence.
+///
+/// Resources do NOT support offset-based paging — the `[PARTIAL]` marker
+/// directs callers to structured-access tools (`decompose_character` /
+/// `decompose_preset`) instead.
 pub(crate) fn truncate_for_context(content: &str) -> String {
+    truncate_with_notice(
+        content,
+        "content exceeds single-read cap; use decompose_character / decompose_preset for structured access",
+    )
+}
+
+/// Like `truncate_for_context` but with a caller-supplied notice in the
+/// `[PARTIAL]` marker. Used by `read_plugin_data` which needs to point at
+/// `plugin_blob_read` instead of the character/preset decompose tools.
+pub(crate) fn truncate_with_notice(content: &str, notice: &str) -> String {
     let max_len = max_read_bytes();
     if content.len() <= max_len {
         return content.to_string();
@@ -53,9 +67,10 @@ pub(crate) fn truncate_for_context(content: &str) -> String {
         end -= 1;
     }
     format!(
-        "[PARTIAL: total={}, offset=0, limit={} — content exceeds single-read cap; use decompose_character / decompose_preset for structured access, or page via offset]\n{}",
+        "[PARTIAL: total={}, limit={} — {}]\n{}",
         content.len(),
         end,
+        notice,
         &content[..end]
     )
 }
@@ -1327,4 +1342,54 @@ fn rollback_messages_tool() -> Tool {
             "required": ["character_id", "session_id"]
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_under_cap_returns_unchanged() {
+        let content = "short content";
+        assert_eq!(truncate_for_context(content), content);
+    }
+
+    #[test]
+    fn truncate_over_cap_adds_partial_marker() {
+        let large = "x".repeat(max_read_bytes() + 100);
+        let result = truncate_for_context(&large);
+        assert!(
+            result.starts_with("[PARTIAL:"),
+            "oversized content should get [PARTIAL] marker: {}",
+            &result[..40]
+        );
+        assert!(result.contains("limit="));
+        // Truncated content should be shorter than the original.
+        assert!(result.len() < large.len() + 200); // +200 for the marker line
+    }
+
+    #[test]
+    fn truncate_char_boundary_safe() {
+        // Multi-byte UTF-8: '€' is 3 bytes. Fill to just over the cap with
+        // multi-byte chars so the boundary falls inside a char.
+        let cap = max_read_bytes();
+        let euro = "€"; // 3 bytes
+        let mut content = String::new();
+        while content.len() <= cap {
+            content.push_str(euro);
+        }
+        let result = truncate_for_context(&content);
+        assert!(result.starts_with("[PARTIAL:"));
+        // The truncated portion (after the marker line) must be valid UTF-8.
+        let truncated_part = result.lines().skip(1).collect::<Vec<_>>().join("\n");
+        assert!(std::str::from_utf8(truncated_part.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_with_notice_uses_custom_message() {
+        let large = "y".repeat(max_read_bytes() + 10);
+        let result = truncate_with_notice(&large, "custom hint text");
+        assert!(result.contains("custom hint text"));
+        assert!(!result.contains("decompose_character"));
+    }
 }

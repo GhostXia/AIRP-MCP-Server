@@ -304,10 +304,14 @@ async fn test_update_lorebook_via_path() {
         }))
         .await
         .unwrap();
-    // New JSON return format: {"entries": 2, "source": "lorebook_path", ...}
+    // New JSON return format: {"entries": 2, "source": "lorebook_path", "bytes_read": N, ...}
     let resp: Value = serde_json::from_str(&result).expect("update_lorebook should return JSON");
     assert_eq!(resp["entries"], 2, "should report 2 entries: {result}");
     assert_eq!(resp["source"], "lorebook_path");
+    assert!(
+        resp["bytes_read"].as_u64().unwrap_or_default() > 0,
+        "bytes_read should be non-zero"
+    );
 
     // Verify the entries were imported: keyword-gated + constant.
     let result = server
@@ -566,7 +570,7 @@ async fn test_import_preset_via_path() {
         .unwrap();
     let v: Value = serde_json::from_str(&result).unwrap();
     assert_eq!(v["source"], "preset_path");
-    assert_eq!(v["bytes_written"], preset_json.len());
+    assert_eq!(v["bytes_read"], preset_json.len());
 
     // Verify it was written to the presets dir (subdirectory layout: presets/<id>/preset.json).
     let written_path = ctx
@@ -574,7 +578,10 @@ async fn test_import_preset_via_path() {
         .join("presets")
         .join("path-preset")
         .join("preset.json");
-    assert!(written_path.exists(), "preset file should exist at {written_path:?}");
+    assert!(
+        written_path.exists(),
+        "preset file should exist at {written_path:?}"
+    );
 
     // Importing with neither preset_json nor preset_path should fail.
     assert!(
@@ -615,8 +622,22 @@ async fn test_import_v3_character_card() {
         .handle_import_card(serde_json::json!({"png_base64": png_base64}))
         .await
         .unwrap();
-    assert!(result.contains("Successfully imported"));
-    assert!(result.contains("V3TestCharacter"));
+    // Validate the JSON response contract (not free-form text).
+    let import_resp: Value = serde_json::from_str(&result).expect("import_card should return JSON");
+    assert_eq!(import_resp["source"], "png_base64");
+    assert!(import_resp["bytes_read"].as_u64().unwrap_or_default() > 0);
+    assert!(
+        import_resp["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Successfully imported")
+    );
+    assert!(
+        import_resp["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("V3TestCharacter")
+    );
 
     // Verify the character was imported with V3 fields.
     let char_result = server
@@ -635,10 +656,15 @@ async fn test_import_v3_character_card() {
         .join("v3testcharacter")
         .join("world")
         .join("lorebook.json");
-    assert!(lorebook_path.exists(), "lorebook should be extracted from V3 card");
+    assert!(
+        lorebook_path.exists(),
+        "lorebook should be extracted from V3 card"
+    );
     let lb_json = std::fs::read_to_string(&lorebook_path).unwrap();
     let lb: Value = serde_json::from_str(&lb_json).unwrap();
-    let entries = lb["entries"].as_array().expect("entries should be an array");
+    let entries = lb["entries"]
+        .as_array()
+        .expect("entries should be an array");
     assert_eq!(entries.len(), 2, "V3 character_book should have 2 entries");
 
     // Find the constant entry and verify the `constant` flag was preserved.
@@ -647,7 +673,8 @@ async fn test_import_v3_character_card() {
         .find(|e| e["constant"] == true)
         .expect("should have a constant entry");
     assert_eq!(
-        constant_entry["content"], "This entry is always active (constant)."
+        constant_entry["content"],
+        "This entry is always active (constant)."
     );
 
     // The `comment` field should have been mapped to `name` for display.
@@ -665,5 +692,86 @@ async fn test_import_v3_character_card() {
     assert!(
         apply_result.contains("always active"),
         "constant entry from V3 character_book should be auto-included: {apply_result}"
+    );
+}
+
+#[tokio::test]
+async fn test_lorebook_sillytavern_native_field_names() {
+    // CodeRabbit audit: verify that SillyTavern's native field names
+    // (key, keysecondary, disable, order, caseSensitive) deserialize
+    // correctly via serde aliases + normalize_lorebook_entry's disable
+    // → enabled inversion.
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+
+    let card = common::create_test_card();
+    let png_base64 = common::card_to_base64(&card);
+    server
+        .handle_import_card(serde_json::json!({"png_base64": png_base64}))
+        .await
+        .unwrap();
+
+    // SillyTavern native field names: key (not keys), disable (not enabled),
+    // order (not insertion_order), caseSensitive (not case_sensitive),
+    // keysecondary (not secondary_keys).
+    let lorebook_json = serde_json::json!({
+        "entries": {
+            "0": {
+                "comment": "Dragon",
+                "key": ["dragon", "wyrm"],
+                "keysecondary": ["fire"],
+                "content": "Dragons rule the skies.",
+                "disable": false,
+                "order": 5,
+                "caseSensitive": false,
+                "constant": false,
+                "selective": true
+            }
+        }
+    })
+    .to_string();
+
+    let lb_file = ctx.data_dir.join("st_lorebook.json");
+    std::fs::write(&lb_file, &lorebook_json).unwrap();
+
+    let result = server
+        .handle_update_lorebook(serde_json::json!({
+            "character_id": "testcharacter",
+            "lorebook_path": lb_file.to_string_lossy()
+        }))
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_str(&result).expect("should return JSON");
+    assert_eq!(resp["entries"], 1, "should parse 1 entry: {result}");
+
+    // Verify the ST field names were mapped: key → keys should match "dragon".
+    let apply_result = server
+        .handle_apply_lorebook(serde_json::json!({
+            "character_id": "testcharacter",
+            "text": "A dragon appeared"
+        }))
+        .await
+        .unwrap();
+    assert!(
+        apply_result.contains("Dragon"),
+        "ST `key` field should map to `keys` and match: {apply_result}"
+    );
+    assert!(
+        apply_result.contains("Dragons rule the skies."),
+        "content should be present: {apply_result}"
+    );
+
+    // Verify `disable: false` → `enabled: true` (entry matched, so it's enabled).
+    // If disable had been true, the entry would NOT match.
+    let no_match_result = server
+        .handle_apply_lorebook(serde_json::json!({
+            "character_id": "testcharacter",
+            "text": "completely unrelated"
+        }))
+        .await
+        .unwrap();
+    assert!(
+        !no_match_result.contains("Dragon"),
+        "Non-matching text should not include keyword-gated entry"
     );
 }

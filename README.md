@@ -133,7 +133,7 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 | `airp://characters/{id}/gating/checkpoints` | 检查点进度 |
 | `airp://presets` | 预设 ID 列表 |
 | `airp://presets/{id}` | 预设详情 |
-| `airp://presets/{id}/raw` | 预设原始 JSON（>100KB 截断 + 翻页提示） |
+| `airp://presets/{id}/raw` | 预设原始 JSON（>32 KiB 截断 + `[PARTIAL]` 标记，用 `decompose_preset` 获取结构化访问） |
 | `airp://presets/{id}/artifacts` | 预设分析产物文件树 |
 | `airp://presets/{id}/regex` | 预设正则脚本列表 |
 | `airp://scenes` | 场景列表 |

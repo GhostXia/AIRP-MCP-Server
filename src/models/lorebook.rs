@@ -18,10 +18,20 @@ pub struct Lorebook {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LorebookEntry {
     pub id: String,
+    /// Primary trigger keys. SillyTavern uses the singular `key` field name
+    /// (still an array); the alias ensures ST world books deserialize correctly.
+    #[serde(alias = "key")]
     pub keys: Vec<String>,
     pub content: String,
+    /// Whether the entry is active. SillyTavern uses `disable` (inverted);
+    /// `normalize_lorebook_entry` maps `disable: true` → `enabled: false`
+    /// when `enabled` is absent.
     pub enabled: bool,
+    /// Insertion order. SillyTavern uses `order` as the field name.
+    #[serde(alias = "order")]
     pub insertion_order: i32,
+    /// Case-sensitive key matching. SillyTavern uses `caseSensitive`.
+    #[serde(alias = "caseSensitive")]
     pub case_sensitive: bool,
     pub name: Option<String>,
     pub comment: Option<String>,
@@ -31,8 +41,9 @@ pub struct LorebookEntry {
     #[serde(default)]
     pub constant: bool,
     /// Secondary keys used when `selective` is true (SillyTavern V2+).
+    /// SillyTavern uses `keysecondary` as the field name.
     /// Stored for round-trip fidelity; not yet used by AIRP matching.
-    #[serde(default)]
+    #[serde(default, alias = "keysecondary")]
     pub secondary_keys: Vec<String>,
     /// If true, `secondary_keys` are used for matching instead of `keys`.
     /// Stored for round-trip fidelity; not yet used by AIRP matching.
