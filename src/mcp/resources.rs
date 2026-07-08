@@ -388,7 +388,7 @@ impl AirpMcpServer {
         // Cap content returned into the model context. Mirrors plugin blob
         // reads: truncate oversized files with a [PARTIAL: ...] marker instead
         // of dumping the whole preset and burning the token budget.
-        Ok(crate::mcp::truncate_for_context(&cleaned))
+        Ok(crate::mcp::truncate_for_context(cleaned))
     }
 
     async fn read_preset_artifacts(&self, preset_id: &str) -> Result<String> {

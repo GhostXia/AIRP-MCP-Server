@@ -345,7 +345,7 @@ impl AirpMcpServer {
                 //   - Full lorebook: {"entries": [...]} or {"entries": {...}}
                 // This keeps entries parity with lorebook_path.
                 let wrapped = if entries.is_array()
-                    || (entries.is_object() && !entries.get("entries").is_some())
+                    || (entries.is_object() && entries.get("entries").is_none())
                 {
                     serde_json::json!({ "entries": entries })
                 } else {
