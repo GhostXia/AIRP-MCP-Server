@@ -223,7 +223,11 @@ impl AirpMcpServer {
         let store = CharacterStore::new(&self.storage);
         let character = store.get(&id).await?;
 
-        serde_json::to_string_pretty(&character.card).map_err(Into::into)
+        let json = serde_json::to_string_pretty(&character.card)?;
+        // Cap: a V3 card with embedded assets / long description can be tens
+        // of KiB; truncate before it enters the model context. Use
+        // decompose_character for structured access.
+        Ok(crate::mcp::truncate_for_context(&json))
     }
 
     async fn read_character_greetings(&self, character_id: &str) -> Result<String> {
@@ -248,7 +252,11 @@ impl AirpMcpServer {
         let store = CharacterStore::new(&self.storage);
         let lorebook = store.get_lorebook(&id).await?;
 
-        serde_json::to_string_pretty(&lorebook).map_err(Into::into)
+        let json = serde_json::to_string_pretty(&lorebook)?;
+        // Cap: a SillyTavern world book can have hundreds of entries; truncate
+        // before it enters the model context. Use apply_lorebook to get only
+        // the matching subset.
+        Ok(crate::mcp::truncate_for_context(&json))
     }
 
     async fn read_character_live_state(&self, character_id: &str) -> Result<String> {
@@ -388,19 +396,10 @@ impl AirpMcpServer {
 
         let raw = tokio::fs::read_to_string(&path).await?;
         let cleaned = crate::storage::strip_utf8_bom(&raw);
-
-        let max_len = 100_000;
-        if cleaned.len() > max_len {
-            let truncated = &cleaned[..max_len];
-            Ok(format!(
-                "[PARTIAL: total={}, offset=0, limit={} — increase limit query param for more]\n{}",
-                cleaned.len(),
-                max_len,
-                truncated
-            ))
-        } else {
-            Ok(cleaned.to_string())
-        }
+        // Cap content returned into the model context. Mirrors plugin blob
+        // reads: truncate oversized files with a [PARTIAL: ...] marker instead
+        // of dumping the whole preset and burning the token budget.
+        Ok(crate::mcp::truncate_for_context(&cleaned))
     }
 
     async fn read_preset_artifacts(&self, preset_id: &str) -> Result<String> {

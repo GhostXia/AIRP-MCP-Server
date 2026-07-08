@@ -11,53 +11,55 @@ impl AirpMcpServer {
     // Character tools
 
     pub async fn handle_import_card(&self, args: Value) -> Result<String> {
-        // Bounds memory + limits decompression-bomb surface (zTXt/IDAT zlib).
-        const MAX_PNG_BYTES: usize = 10 * 1024 * 1024;
+        // Cap png_base64 (content enters the model context via JSON-RPC).
+        // png_path is uncapped — PNG bytes stay server-side only.
+        const MAX_PNG_BASE64_BYTES: usize = 10 * 1024 * 1024;
         let png_base64 = args["png_base64"].as_str();
         let png_path = args["png_path"].as_str();
 
-        let png_data = match (png_base64, png_path) {
+        let (png_data, source) = match (png_base64, png_path) {
             (Some(b64), None) => {
                 let data = base64_decode(b64)?;
-                if data.len() > MAX_PNG_BYTES {
+                if data.len() > MAX_PNG_BASE64_BYTES {
                     return Err(crate::error::AirpError::Validation(format!(
-                        "PNG too large: {} bytes exceeds {} byte cap",
+                        "PNG too large: {} bytes exceeds {} byte cap; use png_path to import from a file",
                         data.len(),
-                        MAX_PNG_BYTES
+                        MAX_PNG_BASE64_BYTES
                     )));
                 }
-                data
+                (data, "png_base64")
             }
             (None, Some(path)) => {
-                // Server-side read: the PNG bytes / base64 never enter the model
-                // context, avoiding the base64 token-burn (a 10 MiB card = ~13 MiB
-                // of base64 text if the agent encodes it). Size-check via metadata
-                // BEFORE reading, so a bomb file is rejected without loading it.
+                // Server-side read: the PNG bytes / base64 never enter the
+                // model context, avoiding the base64 token-burn (a 10 MiB
+                // card = ~13 MiB of base64 text if the agent encodes it).
+                // No size cap — content stays server-side only; the user is
+                // reading their own file.
+                //
+                // Path is resolved relative to the server process cwd.
+                // Absolute paths are accepted (no sandbox yet — see Issue #28
+                // audit); this will tighten in a future release.
                 let meta = tokio::fs::metadata(path).await.map_err(|e| {
                     crate::error::AirpError::Validation(format!(
-                        "cannot stat png_path {}: {}",
-                        path, e
+                        "png_path not accessible: {} (path: {}). \
+                         Tip: use a relative path from the server cwd, or an absolute path.",
+                        e, path
                     ))
                 })?;
                 if !meta.is_file() {
                     return Err(crate::error::AirpError::Validation(format!(
-                        "png_path is not a file: {}",
-                        path
+                        "png_path is not a regular file: {} (found {})",
+                        path,
+                        if meta.is_dir() { "directory" } else { "other" }
                     )));
                 }
-                if meta.len() > MAX_PNG_BYTES as u64 {
-                    return Err(crate::error::AirpError::Validation(format!(
-                        "PNG too large: {} bytes exceeds {} byte cap",
-                        meta.len(),
-                        MAX_PNG_BYTES
-                    )));
-                }
-                tokio::fs::read(path).await.map_err(|e| {
+                let data = tokio::fs::read(path).await.map_err(|e| {
                     crate::error::AirpError::Validation(format!(
-                        "cannot read png_path {}: {}",
+                        "failed to read png_path {}: {} (permission denied?)",
                         path, e
                     ))
-                })?
+                })?;
+                (data, "png_path")
             }
             (Some(_), Some(_)) => {
                 return Err(crate::error::AirpError::Validation(
@@ -74,11 +76,15 @@ impl AirpMcpServer {
         let store = CharacterStore::new(&self.storage);
         let character = store.import_from_png(&png_data).await?;
 
-        Ok(format!(
-            "Successfully imported character: {} (ID: {})",
-            character.card.name,
-            character.id.as_ref()
-        ))
+        Ok(serde_json::json!({
+            "message": format!("Successfully imported character: {} (ID: {})",
+                character.card.name, character.id.as_ref()),
+            "character_id": character.id.as_ref(),
+            "name": character.card.name,
+            "source": source,
+            "bytes_read": png_data.len(),
+        })
+        .to_string())
     }
 
     pub async fn handle_list_characters(&self) -> Result<String> {
@@ -306,25 +312,88 @@ impl AirpMcpServer {
         let character_id = args["character_id"].as_str().ok_or_else(|| {
             crate::error::AirpError::Validation("Missing character_id".to_string())
         })?;
-        let entries = args["entries"]
-            .as_array()
-            .ok_or_else(|| crate::error::AirpError::Validation("Missing entries".to_string()))?;
+        let entries_arg = args.get("entries");
+        let lorebook_path_arg = args["lorebook_path"].as_str();
 
         let id = CharacterId::new(character_id)?;
 
-        let lorebook_entries: Vec<LorebookEntry> = entries
-            .iter()
-            .map(|e| serde_json::from_value(e.clone()).map_err(AirpError::Json))
-            .collect::<Result<Vec<_>>>()?;
-
-        let lorebook = Lorebook {
-            entries: lorebook_entries,
+        // Issue #28: lorebook_path lets the server read the lorebook JSON
+        // directly from a file. The content never enters the model context,
+        // so large SillyTavern world books (with hundreds of entries) can be
+        // imported without burning tokens or hitting JSON-RPC request-body
+        // limits. Mirrors the png_path / preset_path pattern.
+        //
+        // entries (inline JSON) is kept for backward compatibility; the two
+        // are mutually exclusive. lorebook_path is uncapped — content stays
+        // server-side only.
+        let (lorebook, source) = match (entries_arg, lorebook_path_arg) {
+            (Some(entries), None) => {
+                let entries_arr = entries.as_array().ok_or_else(|| {
+                    crate::error::AirpError::Validation("entries must be an array".to_string())
+                })?;
+                let lorebook_entries: Vec<LorebookEntry> = entries_arr
+                    .iter()
+                    .map(|e| serde_json::from_value(e.clone()).map_err(AirpError::Json))
+                    .collect::<Result<Vec<_>>>()?;
+                (Lorebook { entries: lorebook_entries }, "entries")
+            }
+            (None, Some(path)) => {
+                let meta = tokio::fs::metadata(path).await.map_err(|e| {
+                    AirpError::Validation(format!(
+                        "lorebook_path not accessible: {} (path: {}). \
+                         Tip: use a relative path from the server cwd, or an absolute path.",
+                        e, path
+                    ))
+                })?;
+                if !meta.is_file() {
+                    return Err(AirpError::Validation(format!(
+                        "lorebook_path is not a regular file: {} (found {})",
+                        path,
+                        if meta.is_dir() { "directory" } else { "other" }
+                    )));
+                }
+                // No size cap: lorebook_path content never enters the model
+                // context. Server-side read + parse stay in process memory;
+                // the user owns the file.
+                let bytes = tokio::fs::read(path).await.map_err(|e| {
+                    AirpError::Validation(format!(
+                        "failed to read lorebook_path {}: {} (permission denied?)",
+                        path, e
+                    ))
+                })?;
+                let json_str = String::from_utf8(bytes).map_err(|_| {
+                    AirpError::Validation("lorebook_path content is not valid UTF-8".to_string())
+                })?;
+                let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+                    AirpError::Validation(format!("lorebook_path is not valid JSON: {}", e))
+                })?;
+                // Reuse extract_lorebook: handles SillyTavern's entries-as-object
+                // map, entries-as-array, and direct Lorebook struct forms.
+                let lb = crate::storage::character_store::extract_lorebook(&value)?;
+                (lb, "lorebook_path")
+            }
+            (Some(_), Some(_)) => {
+                return Err(AirpError::Validation(
+                    "provide exactly one of entries / lorebook_path".to_string(),
+                ));
+            }
+            (None, None) => {
+                return Err(AirpError::Validation(
+                    "missing entries or lorebook_path".to_string(),
+                ));
+            }
         };
 
         let store = CharacterStore::new(&self.storage);
         store.save_lorebook(&id, &lorebook).await?;
 
-        Ok(format!("Lorebook updated for character: {}", character_id))
+        Ok(serde_json::json!({
+            "message": format!("Lorebook updated for character: {}", character_id),
+            "character_id": character_id,
+            "entries": lorebook.entries.len(),
+            "source": source,
+        })
+        .to_string())
     }
 
     // State tools
@@ -1359,25 +1428,93 @@ impl AirpMcpServer {
         let preset_id = args["preset_id"]
             .as_str()
             .ok_or_else(|| AirpError::Validation("Missing preset_id".to_string()))?;
-        let preset_json = args["preset_json"]
-            .as_str()
-            .ok_or_else(|| AirpError::Validation("Missing preset_json".to_string()))?;
+        let preset_json = args["preset_json"].as_str();
+        let preset_path_arg = args["preset_path"].as_str();
 
         validate_id_segment(preset_id)?;
 
-        let _: serde_json::Value = serde_json::from_str(preset_json)
-            .map_err(|e| AirpError::Validation(format!("preset_json is not valid JSON: {}", e)))?;
+        // Issue #28 bug 2: preset_json via JSON-RPC hits a low size limit in
+        // many MCP clients (Claude Desktop, etc.). preset_path lets the server
+        // read the file directly — the preset content never enters the model
+        // context, and large SillyTavern presets (with big prompts[] arrays)
+        // can be imported without hitting request-body caps. Mirrors the
+        // png_path pattern in handle_import_card.
+        //
+        // preset_json is capped (content travels through the request body and
+        // the model context). preset_path is uncapped — the content stays
+        // server-side only, so there is no context-burn risk; the user is
+        // reading their own file.
+        const MAX_PRESET_JSON_BYTES: usize = 64 * 1024 * 1024;
+
+        let (preset_bytes, source_label) = match (preset_json, preset_path_arg) {
+            (Some(json), None) => {
+                let bytes = json.as_bytes();
+                if bytes.len() > MAX_PRESET_JSON_BYTES {
+                    return Err(AirpError::Validation(format!(
+                        "preset_json too large: {} bytes exceeds {} byte cap; use preset_path to import from a file",
+                        bytes.len(),
+                        MAX_PRESET_JSON_BYTES
+                    )));
+                }
+                (bytes.to_vec(), "preset_json")
+            }
+            (None, Some(path)) => {
+                let meta = tokio::fs::metadata(path).await.map_err(|e| {
+                    AirpError::Validation(format!(
+                        "preset_path not accessible: {} (path: {}). \
+                         Tip: use a relative path from the server cwd, or an absolute path.",
+                        e, path
+                    ))
+                })?;
+                if !meta.is_file() {
+                    return Err(AirpError::Validation(format!(
+                        "preset_path is not a regular file: {} (found {})",
+                        path,
+                        if meta.is_dir() { "directory" } else { "other" }
+                    )));
+                }
+                // No size cap: preset_path content never enters the model
+                // context. Server-side read + parse stay in process memory;
+                // the user owns the file.
+                let bytes = tokio::fs::read(path).await.map_err(|e| {
+                    AirpError::Validation(format!(
+                        "failed to read preset_path {}: {} (permission denied?)",
+                        path, e
+                    ))
+                })?;
+                (bytes, "preset_path")
+            }
+            (Some(_), Some(_)) => {
+                return Err(AirpError::Validation(
+                    "provide exactly one of preset_json / preset_path".to_string(),
+                ));
+            }
+            (None, None) => {
+                return Err(AirpError::Validation(
+                    "missing preset_json or preset_path".to_string(),
+                ));
+            }
+        };
+
+        // Validate JSON before writing (catches corruption early).
+        let preset_str = String::from_utf8(preset_bytes).map_err(|_| {
+            AirpError::Validation("preset content is not valid UTF-8".to_string())
+        })?;
+        let _: serde_json::Value = serde_json::from_str(&preset_str).map_err(|e| {
+            AirpError::Validation(format!("preset is not valid JSON: {}", e))
+        })?;
 
         let preset_path = self.storage.preset_json_path(preset_id);
         if let Some(parent) = preset_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&preset_path, preset_json).await?;
+        tokio::fs::write(&preset_path, &preset_str).await?;
 
         Ok(serde_json::json!({
             "preset_id": preset_id,
             "path": preset_path.to_string_lossy(),
-            "bytes_written": preset_json.len(),
+            "bytes_written": preset_str.len(),
+            "source": source_label,
         })
         .to_string())
     }

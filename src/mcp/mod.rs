@@ -37,6 +37,29 @@ pub(crate) fn max_read_bytes() -> usize {
     })
 }
 
+/// Truncate content destined for the model context, with a `[PARTIAL: ...]`
+/// marker so the caller knows there is more to page. Used by resource reads
+/// (character card, lorebook, preset raw) to keep a single read from blowing
+/// the token budget — mirrors the cap already applied to plugin blob reads.
+///
+/// Char-boundary safe: never splits a multi-byte UTF-8 sequence.
+pub(crate) fn truncate_for_context(content: &str) -> String {
+    let max_len = max_read_bytes();
+    if content.len() <= max_len {
+        return content.to_string();
+    }
+    let mut end = max_len;
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "[PARTIAL: total={}, offset=0, limit={} — content exceeds single-read cap; use decompose_character / decompose_preset for structured access, or page via offset]\n{}",
+        content.len(),
+        end,
+        &content[..end]
+    )
+}
+
 #[derive(Clone)]
 pub struct AirpMcpServer {
     pub storage: Arc<Storage>,
@@ -556,17 +579,17 @@ impl ServerHandler for AirpMcpServer {
 fn import_card_tool() -> Tool {
     Tool::new(
         "import_card",
-        "Import a character card from a PNG. Provide exactly one of: png_path (RECOMMENDED — server reads the file directly, so the base64 never enters the model context and cannot burn tokens) or png_base64. Input capped at 10 MiB.",
+        "Import a character card from a PNG. Supports both V2 (chara chunk) and V3 (ccv3 chunk) character cards; V3 character_book lorebook entries are extracted automatically. Provide exactly one of: png_path (RECOMMENDED — server reads the file directly, so the base64 never enters the model context and cannot burn tokens; no size cap) or png_base64 (capped at 10 MiB).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
                 "png_path": {
                     "type": "string",
-                    "description": "Filesystem path to the PNG. Preferred: AIRP reads + decodes it server-side (no base64 in context). Read server-side — keep the HTTP transport on a trusted LAN."
+                    "description": "Filesystem path to the PNG. Preferred: AIRP reads + decodes it server-side (no base64 in context, no size limit). Read server-side — keep the HTTP transport on a trusted LAN."
                 },
                 "png_base64": {
                     "type": "string",
-                    "description": "Base64-encoded PNG. Use only when the file is not reachable by path; encoding a large card into base64 floods the model context."
+                    "description": "Base64-encoded PNG. Use only when the file is not reachable by path; encoding a large card into base64 floods the model context. Capped at 10 MiB."
                 }
             }
         })),
@@ -721,7 +744,7 @@ fn get_recent_context_tool() -> Tool {
 fn import_preset_tool() -> Tool {
     Tool::new(
         "import_preset",
-        "Import a SillyTavern preset JSON. Writes to presets/{preset_id}/preset.json.",
+        "Import a SillyTavern preset JSON. Writes to presets/{preset_id}/preset.json. Provide exactly one of: preset_path (RECOMMENDED — server reads the file directly, so the preset content never enters the model context and bypasses JSON-RPC request-body size limits; no size cap) or preset_json (capped at 64 MiB).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
@@ -731,10 +754,14 @@ fn import_preset_tool() -> Tool {
                 },
                 "preset_json": {
                     "type": "string",
-                    "description": "Full SillyTavern preset JSON content"
+                    "description": "Full SillyTavern preset JSON content. Use only when the file is not reachable by path; large presets sent through JSON-RPC may hit client-side request-body caps."
+                },
+                "preset_path": {
+                    "type": "string",
+                    "description": "Filesystem path to the preset JSON file. Preferred: AIRP reads it server-side (no content in model context, no request-body limit)."
                 }
             },
-            "required": ["preset_id", "preset_json"]
+            "required": ["preset_id"]
         })),
     )
 }
@@ -1118,7 +1145,7 @@ fn apply_lorebook_tool() -> Tool {
 fn update_lorebook_tool() -> Tool {
     Tool::new(
         "update_lorebook",
-        "Update lorebook entries for a character",
+        "Update lorebook entries for a character. Provide exactly one of: lorebook_path (RECOMMENDED — server reads the file directly, so the lorebook content never enters the model context and bypasses JSON-RPC request-body size limits; no size cap; accepts SillyTavern world book JSON with entries as array or object map) or entries (inline JSON array).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
@@ -1128,13 +1155,17 @@ fn update_lorebook_tool() -> Tool {
                 },
                 "entries": {
                     "type": "array",
-                    "description": "Lorebook entries",
+                    "description": "Lorebook entries (inline JSON). Use only when the file is not reachable by path; large lorebooks sent through JSON-RPC may hit client-side request-body caps.",
                     "items": {
                         "type": "object"
                     }
+                },
+                "lorebook_path": {
+                    "type": "string",
+                    "description": "Filesystem path to a SillyTavern lorebook JSON file. Preferred: AIRP reads it server-side (no content in model context, no request-body limit). Accepts {\"entries\": [...]} or {\"entries\": {\"0\": {...}}} forms."
                 }
             },
-            "required": ["character_id", "entries"]
+            "required": ["character_id"]
         })),
     )
 }

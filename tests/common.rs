@@ -51,6 +51,51 @@ pub fn create_test_card() -> serde_json::Value {
     })
 }
 
+/// Build a V3 character card JSON (Issue #28 bug 3) with a character_book
+/// containing one constant (常驻) lorebook entry and one keyword-gated entry.
+pub fn create_test_v3_card() -> serde_json::Value {
+    serde_json::json!({
+        "spec": "chara_card_v3",
+        "spec_version": "3.0",
+        "data": {
+            "name": "V3TestCharacter",
+            "description": "A V3 test character",
+            "personality": "Wise and calm",
+            "scenario": "V3 scenario",
+            "first_mes": "Greetings, I am a V3 character.",
+            "mes_example": "<START>\nUser: Hi\nV3TestCharacter: Hello there.\n",
+            "tags": ["v3", "test"],
+            "creator": "V3Creator",
+            "character_version": "3.0",
+            "creator_notes": "A test V3 card",
+            "character_book": {
+                "entries": {
+                    "0": {
+                        "id": "0",
+                        "keys": ["castle"],
+                        "content": "The castle stands on a hill.",
+                        "enabled": true,
+                        "insertion_order": 0,
+                        "case_sensitive": false,
+                        "comment": "Castle info",
+                        "constant": false
+                    },
+                    "1": {
+                        "id": "1",
+                        "keys": ["nonexistent"],
+                        "content": "This entry is always active (constant).",
+                        "enabled": true,
+                        "insertion_order": 10,
+                        "case_sensitive": false,
+                        "comment": "Always-on entry",
+                        "constant": true
+                    }
+                }
+            }
+        }
+    })
+}
+
 pub fn card_to_base64(card: &serde_json::Value) -> String {
     use base64::Engine;
 
@@ -59,6 +104,53 @@ pub fn card_to_base64(card: &serde_json::Value) -> String {
     // Build a minimal PNG with a chara text chunk
     let png_data = build_minimal_png(&card_json);
     base64::engine::general_purpose::STANDARD.encode(&png_data)
+}
+
+/// Encode a V3 character card into a PNG with a `ccv3` tEXt chunk (Issue #28
+/// bug 3). V3 spec: tEXt chunk named `ccv3`, value = base64(JSON).
+pub fn v3_card_to_base64(card: &serde_json::Value) -> String {
+    use base64::Engine;
+
+    let card_json = serde_json::to_string(card).expect("Failed to serialize V3 card");
+    let png_data = build_minimal_png_v3(&card_json);
+    base64::engine::general_purpose::STANDARD.encode(&png_data)
+}
+
+/// Build a PNG with a `ccv3` tEXt chunk (uncompressed, V3 spec).
+fn build_minimal_png_v3(card_json: &str) -> Vec<u8> {
+    use base64::Engine;
+
+    let mut data = Vec::new();
+
+    // PNG signature
+    data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+
+    // IHDR chunk
+    let ihdr_data = create_ihdr(1, 1);
+    write_chunk(&mut data, b"IHDR", &ihdr_data);
+
+    // ccv3 tEXt chunk: keyword "ccv3" + null + base64(JSON)
+    let ccv3_b64 = base64::engine::general_purpose::STANDARD.encode(card_json.as_bytes());
+    let text_data = create_text_chunk(b"ccv3", ccv3_b64.as_bytes());
+    write_chunk(&mut data, b"tEXt", &text_data);
+
+    // IDAT chunk (minimal image data)
+    let idat_data = create_idat();
+    write_chunk(&mut data, b"IDAT", &idat_data);
+
+    // IEND chunk
+    write_chunk(&mut data, b"IEND", &[]);
+
+    data
+}
+
+/// Create a tEXt chunk payload: keyword + null separator + text (uncompressed).
+fn create_text_chunk(keyword: &[u8], text: &[u8]) -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(keyword);
+    data.push(0); // null separator between keyword and text
+    data.extend_from_slice(text);
+    data
 }
 
 fn build_minimal_png(chara_json: &str) -> Vec<u8> {

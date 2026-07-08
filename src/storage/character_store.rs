@@ -17,10 +17,15 @@ impl<'a> CharacterStore<'a> {
         Self { storage }
     }
 
-    /// Import character from PNG card data
+    /// Import character from PNG card data.
+    ///
+    /// Supports both V2 (`chara` chunk) and V3 (`ccv3` chunk) character cards
+    /// per Issue #28 bug 3. V3 cards may carry a `character_book` (Lorebook)
+    /// inside `data.character_book`; it is extracted and saved to the
+    /// character's `world/lorebook.json` instead of being discarded.
     pub async fn import_from_png(&self, png_data: &[u8]) -> Result<Character> {
-        // Parse PNG chara chunk
-        let card = self.parse_png_card(png_data).await?;
+        // Parse PNG chara/ccv3 chunk
+        let (card, extracted_lorebook) = self.parse_png_card(png_data).await?;
         let id = CharacterId::new(sanitize_id(&card.name))?;
 
         // Create character directory
@@ -49,8 +54,9 @@ impl<'a> CharacterStore<'a> {
         let data_json = serde_json::to_string_pretty(&data)?;
         fs::write(&data_path, data_json).await?;
 
-        // Initialize empty lorebook
-        let lorebook = Lorebook::default();
+        // Save lorebook — use the one extracted from the card (V3
+        // character_book) if present, otherwise initialize empty.
+        let lorebook = extracted_lorebook.unwrap_or_default();
         let lorebook_path = char_dir.join("world").join("lorebook.json");
         fs::create_dir_all(lorebook_path.parent().unwrap()).await?;
         let lorebook_json = serde_json::to_string_pretty(&lorebook)?;
@@ -200,8 +206,16 @@ impl<'a> CharacterStore<'a> {
         Ok(())
     }
 
-    /// Parse PNG character card
-    async fn parse_png_card(&self, png_data: &[u8]) -> Result<CharacterCard> {
+    /// Parse PNG character card.
+    ///
+    /// Issue #28 bug 3: now supports V3 (`ccv3` tEXt chunk) in addition to
+    /// V2 (`chara` zTXt/tEXt chunk). Per the V3 spec, if both `ccv3` and
+    /// `chara` chunks are present, `ccv3` takes precedence. V3 cards may also
+    /// carry a `character_book` (Lorebook) inside `data.character_book`; it is
+    /// extracted and returned alongside the card.
+    ///
+    /// Returns `(CharacterCard, Option<Lorebook>)`.
+    async fn parse_png_card(&self, png_data: &[u8]) -> Result<(CharacterCard, Option<Lorebook>)> {
         use std::io::Cursor;
 
         let mut decoder = png::Decoder::new(Cursor::new(png_data));
@@ -213,21 +227,36 @@ impl<'a> CharacterStore<'a> {
             .read_info()
             .map_err(|e| AirpError::PngParse(e.to_string()))?;
 
-        // Look for chara chunk
+        // V3: look for `ccv3` in tEXt chunks first (spec: tEXt, base64-encoded JSON).
+        for chunk in reader.info().uncompressed_latin1_text.iter() {
+            if chunk.keyword == "ccv3" {
+                // tEXt chunks store text already-decoded in .text (no decompression needed).
+                let decoded = base64_decode(&chunk.text)?;
+                return parse_v3_json(&decoded);
+            }
+        }
+
+        // V2: look for `chara` in zTXt chunks (zlib-compressed base64 JSON).
         for chunk in reader.info().compressed_latin1_text.iter() {
             if chunk.keyword == "chara" {
                 let text = chunk
                     .get_text()
                     .map_err(|e| AirpError::PngParse(format!("ZTXt decode error: {}", e)))?;
                 let decoded = base64_decode(&text)?;
-                let card: CharacterCard = serde_json::from_slice(&decoded)
-                    .map_err(|e| AirpError::PngParse(format!("Invalid chara JSON: {}", e)))?;
-                return Ok(card);
+                return parse_card_json(&decoded);
+            }
+        }
+
+        // V2 fallback: some cards store `chara` in uncompressed tEXt chunks.
+        for chunk in reader.info().uncompressed_latin1_text.iter() {
+            if chunk.keyword == "chara" {
+                let decoded = base64_decode(&chunk.text)?;
+                return parse_card_json(&decoded);
             }
         }
 
         Err(AirpError::PngParse(
-            "No chara chunk found in PNG".to_string(),
+            "No chara or ccv3 chunk found in PNG".to_string(),
         ))
     }
 }
@@ -245,4 +274,150 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(input)
         .map_err(|e| AirpError::PngParse(format!("Base64 decode error: {}", e)))
+}
+
+/// Parse a character card JSON payload.
+///
+/// Handles three shapes transparently:
+/// 1. V3 spec: `{ "spec": "chara_card_v3", "spec_version": "3.0", "data": { ... } }`
+/// 2. V2 spec: `{ "spec": "chara_card_v2", "spec_version": "2.0", "data": { ... } }`
+/// 3. Flat (legacy/SillyTavern export): `{ "name": "...", "description": "...", ... }`
+///
+/// For V3, also extracts `data.character_book` into a `Lorebook` if present.
+/// For V2/V3 wrapped cards, `data.character_book` is also extracted (V2 spec
+/// allows it too).
+fn parse_card_json(json_bytes: &[u8]) -> Result<(CharacterCard, Option<Lorebook>)> {
+    let value: serde_json::Value = serde_json::from_slice(json_bytes)
+        .map_err(|e| AirpError::PngParse(format!("Invalid card JSON: {}", e)))?;
+
+    // Detect wrapped spec format (V2 or V3): { spec, data: { ... } }
+    if let Some(data_obj) = value.get("data").and_then(|d| d.as_object()) {
+        let spec = value.get("spec").and_then(|s| s.as_str()).unwrap_or("");
+        let is_v3 = spec == "chara_card_v3";
+        return parse_wrapped_card(data_obj, is_v3);
+    }
+
+    // Flat format: deserialize directly into CharacterCard.
+    let card: CharacterCard = serde_json::from_value(value)
+        .map_err(|e| AirpError::PngParse(format!("Invalid card fields: {}", e)))?;
+    Ok((card, None))
+}
+
+/// Parse a V3 character card JSON payload (from the `ccv3` chunk).
+/// V3 always uses the wrapped `{ spec, spec_version, data }` shape.
+fn parse_v3_json(json_bytes: &[u8]) -> Result<(CharacterCard, Option<Lorebook>)> {
+    let value: serde_json::Value = serde_json::from_slice(json_bytes)
+        .map_err(|e| AirpError::PngParse(format!("Invalid ccv3 JSON: {}", e)))?;
+
+    let data_obj = value
+        .get("data")
+        .and_then(|d| d.as_object())
+        .ok_or_else(|| {
+            AirpError::PngParse("V3 card missing 'data' object".to_string())
+        })?;
+
+    parse_wrapped_card(data_obj, true)
+}
+
+/// Extract CharacterCard + optional Lorebook from a V2/V3 `data` object.
+///
+/// `is_v3` only affects the error message context. Both V2 and V3 may carry
+/// `character_book`; we extract it for either.
+fn parse_wrapped_card(
+    data: &serde_json::Map<String, serde_json::Value>,
+    is_v3: bool,
+) -> Result<(CharacterCard, Option<Lorebook>)> {
+    let version_label = if is_v3 { "V3" } else { "V2" };
+
+    let card: CharacterCard = serde_json::from_value(serde_json::Value::Object(data.clone()))
+        .map_err(|e| {
+            AirpError::PngParse(format!("Invalid {} card data fields: {}", version_label, e))
+        })?;
+
+    // Extract character_book (Lorebook) if present. V3 spec: data.character_book
+    // is a Lorebook object with `entries`. V2 spec also allows it.
+    let lorebook = data
+        .get("character_book")
+        .and_then(|lb| {
+            if lb.is_null() {
+                None
+            } else {
+                Some(extract_lorebook(lb))
+            }
+        })
+        .transpose()?;
+
+    Ok((card, lorebook))
+}
+
+/// Convert a V2/V3 `character_book` JSON value into a `Lorebook`.
+///
+/// The V2/V3 lorebook entry format uses different field names than AIRP's
+/// internal `LorebookEntry` (e.g. `comment` vs `name`, `constant` flag,
+/// `selective`/`secondary_keys`). We map the known fields and round-trip
+/// the rest through `serde_json::Value` deserialization (with `#[serde(default)]`
+/// on new fields handling missing keys gracefully).
+pub fn extract_lorebook(value: &serde_json::Value) -> Result<Lorebook> {
+    // The V2/V3 lorebook has `entries` as either an array or an object map
+    // (SillyTavern uses an object keyed by entry ID in some versions).
+    let lorebook: Lorebook = if let Some(entries_array) = value.get("entries").and_then(|e| e.as_array()) {
+        // Array form: parse each entry directly.
+        let mut entries = Vec::with_capacity(entries_array.len());
+        for entry_val in entries_array {
+            entries.push(normalize_lorebook_entry(entry_val)?);
+        }
+        Lorebook { entries }
+    } else if let Some(entries_obj) = value.get("entries").and_then(|e| e.as_object()) {
+        // Object form (SillyTavern): keys are entry IDs; merge ID into each entry.
+        let mut entries = Vec::with_capacity(entries_obj.len());
+        for (id, entry_val) in entries_obj {
+            let mut entry = normalize_lorebook_entry(entry_val)?;
+            // Ensure the entry has an ID — use the map key if the entry lacks one.
+            if entry.id.is_empty() {
+                entry.id = id.clone();
+            }
+            entries.push(entry);
+        }
+        Lorebook { entries }
+    } else {
+        // Try direct deserialization as a fallback.
+        serde_json::from_value(value.clone())
+            .map_err(|e| AirpError::PngParse(format!("Invalid character_book format: {}", e)))?
+    };
+
+    Ok(lorebook)
+}
+
+/// Normalize a V2/V3 lorebook entry JSON into AIRP's `LorebookEntry`.
+///
+/// SillyTavern V2/V3 entries use `comment` as the display name (AIRP uses
+/// `name`), and may have `constant`, `selective`, `secondary_keys`,
+/// `position` fields. We handle the `comment` → `name` mapping while letting
+/// serde handle the rest (with `#[serde(default)]` on optional fields).
+fn normalize_lorebook_entry(value: &serde_json::Value) -> Result<LorebookEntry> {
+    let mut val = value.clone();
+
+    if let Some(obj) = val.as_object_mut() {
+        // SillyTavern entries often omit `id` (the ID is the map key in
+        // object-form entries). Insert an empty string so serde doesn't fail
+        // on the missing required field; the caller fills it from the map key.
+        if !obj.contains_key("id") {
+            obj.insert("id".to_string(), serde_json::Value::String(String::new()));
+        }
+
+        // If the entry has a `comment` but no `name`, copy comment → name so the
+        // display name is preserved in AIRP's output (build_context uses `name`).
+        let has_name = obj
+            .get("name")
+            .map(|n| n.as_str().map(|s| !s.is_empty()).unwrap_or(false))
+            .unwrap_or(false);
+        if !has_name {
+            if let Some(comment) = obj.get("comment").cloned() {
+                obj.insert("name".to_string(), comment);
+            }
+        }
+    }
+
+    serde_json::from_value(val)
+        .map_err(|e| AirpError::PngParse(format!("Invalid lorebook entry: {}", e)))
 }

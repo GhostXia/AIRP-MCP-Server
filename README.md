@@ -80,7 +80,7 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 
 | 类别 | 工具 | 用途 |
 |:--|:--|:--|
-| 角色卡 | `import_card` | 导入 SillyTavern 角色卡。**推荐 `png_path`**（服务端读盘解析，base64 不进上下文、不烧 token）或 `png_base64`；≤ 10 MiB |
+| 角色卡 | `import_card` | 导入 SillyTavern 角色卡。**推荐 `png_path`**（服务端读盘解析，base64 不进上下文、不烧 token、无大小限制）或 `png_base64`（≤ 10 MiB） |
 | 角色卡 | `list_characters` | 列出所有角色 |
 | 角色卡 | `get_character` | 查看角色详情 |
 | 角色卡 | `delete_character` | 删除角色及所有数据 |
@@ -91,14 +91,14 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 | 会话 | `rollback_messages` | 回滚最后 N 条消息 |
 | 记忆 | `seal_volume` | 封存当前会话为归档卷（支持清空，省 token） |
 | 世界书 | `apply_lorebook` | 关键词扫描 → 返回匹配的世界书条目 |
-| 世界书 | `update_lorebook` | 更新世界书 |
+| 世界书 | `update_lorebook` | 更新世界书。**推荐 `lorebook_path`**（服务端读盘，JSON 不进上下文、绕过 JSON-RPC 请求体上限、无大小限制、兼容 SillyTavern 世界书格式）或 `entries`（内联 JSON 数组） |
 | 状态 | `update_state` | 更新实时状态（HP / MP / 位置 / 关系值） |
 | 状态 | `get_live_state` | 获取当前状态 |
 | 分析 | `analyze_card` | 4 档分级角色卡分析（Tier 0–3） |
 | 分析 | `get_gating_status` | 查看检查点进度 |
 | 预设 | `list_presets` | 列出所有 AI 预设 |
 | 预设 | `get_preset` | 查看预设详情 |
-| 预设 | `import_preset` | 导入 SillyTavern 预设 JSON |
+| 预设 | `import_preset` | 导入 SillyTavern 预设 JSON。**推荐 `preset_path`**（服务端读盘，JSON 不进上下文、绕过 JSON-RPC 请求体上限、无大小限制）或 `preset_json`（≤ 64 MiB） |
 | 预设 | `write_preset_artifact` | Agent 写入预设分析产物 |
 | 预设 | `list_preset_regex_scripts` | 列出预设正则脚本（含元数据） |
 | 预设 | `remove_preset_regex_script` | 删除预设正则脚本 |
