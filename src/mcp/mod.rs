@@ -103,12 +103,25 @@ impl AirpMcpServer {
 }
 
 fn to_schema(value: serde_json::Value) -> Arc<serde_json::Map<String, serde_json::Value>> {
-    Arc::new(
-        value
-            .as_object()
-            .expect("schema must be JSON object")
-            .clone(),
-    )
+    let mut map = value
+        .as_object()
+        .expect("schema must be JSON object")
+        .clone();
+    // Issue #30: some MCP adapters / OpenAI-compatible providers (e.g. DeepSeek
+    // via Pi) drop or null out the top-level `type` during JSON Schema →
+    // tools[].function.parameters conversion, producing
+    // `schema must be a JSON Schema of 'type: "object"', got 'type: null'`.
+    // Pin both `type` and `required` explicitly so every tool's inputSchema is
+    // self-contained and survives downstream conversion unchanged. Empty
+    // `required: []` is valid JSON Schema and does not change parameter
+    // semantics (e.g. import_card's mutually-exclusive png_path/png_base64
+    // pair stays optional-at-schema-level; the handler still enforces
+    // exactly-one).
+    map.entry("type")
+        .or_insert_with(|| serde_json::json!("object"));
+    map.entry("required")
+        .or_insert_with(|| serde_json::json!([]));
+    Arc::new(map)
 }
 
 fn value_from_map(map: serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
@@ -1391,5 +1404,76 @@ mod tests {
         let result = truncate_with_notice(&large, "custom hint text");
         assert!(result.contains("custom hint text"));
         assert!(!result.contains("decompose_character"));
+    }
+
+    /// Issue #30: every tool's inputSchema must carry a top-level
+    /// `type: "object"` and an explicit `required` array, so the schema
+    /// survives downstream MCP-adapter / OpenAI-compatible-provider
+    /// conversion (DeepSeek via Pi was receiving `type: null` and rejecting
+    /// `import_card`). This pins the contract at the schema-construction
+    /// layer, independent of transport.
+    #[test]
+    fn all_tool_schemas_have_object_type_and_required() {
+        let tools: Vec<Tool> = vec![
+            import_card_tool(),
+            list_characters_tool(),
+            get_character_tool(),
+            delete_character_tool(),
+            start_session_tool(),
+            list_sessions_tool(),
+            append_message_tool(),
+            get_recent_context_tool(),
+            apply_lorebook_tool(),
+            update_lorebook_tool(),
+            update_state_tool(),
+            get_live_state_tool(),
+            seal_volume_tool(),
+            list_presets_tool(),
+            get_preset_tool(),
+            decompose_character_tool(),
+            decompose_preset_tool(),
+            rollback_messages_tool(),
+            analyze_card_tool(),
+            get_gating_status_tool(),
+            import_preset_tool(),
+            write_preset_artifact_tool(),
+            list_preset_regex_scripts_tool(),
+            remove_preset_regex_script_tool(),
+            set_preset_regex_enabled_tool(),
+            create_scene_tool(),
+            list_scenes_tool(),
+            get_scene_tool(),
+            add_character_to_scene_tool(),
+            merge_lorebooks_tool(),
+            build_scene_system_prompt_tool(),
+            export_context_bundle_tool(),
+            plugin_kv_get_tool(),
+            plugin_kv_set_tool(),
+            plugin_jsonl_append_tool(),
+            plugin_jsonl_read_tool(),
+            plugin_blob_write_tool(),
+            plugin_blob_read_tool(),
+        ];
+
+        assert_eq!(
+            tools.len(),
+            38,
+            "registry size drifted; update the list and the transport-level counts"
+        );
+
+        for tool in &tools {
+            let schema = tool.input_schema.as_ref();
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+            "tool `{}` inputSchema.type must be \"object\" (Issue #30)",
+            tool.name
+            );
+            assert!(
+                schema.get("required").map(|r| r.is_array()).unwrap_or(false),
+                "tool `{}` inputSchema must carry an explicit `required` array (Issue #30)",
+                tool.name
+            );
+        }
     }
 }
