@@ -133,6 +133,38 @@ async fn stdio_handshake_then_tool_call_returns_real_data() {
         "list_characters on an empty dir must return the real empty-state message, got: {text:?}"
     );
 
+    // Issue #30: assert every tool's inputSchema carries `type: "object"` over
+    // the stdio wire. Strict OpenAI-compatible providers (DeepSeek via Pi) were
+    // rejecting `import_card` with `got 'type: null'` after a downstream
+    // adapter conversion; pin the contract on the actual stdio payload.
+    send(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await;
+    let listed = read_response(&mut stdout, 3).await;
+    assert!(
+        listed.get("error").is_none(),
+        "tools/list errored: {listed}"
+    );
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list must return a tools array: {listed}"));
+    assert_eq!(tools.len(), 38, "expected all 38 tools over stdio");
+    for t in tools {
+        assert_eq!(
+            t["inputSchema"]["type"].as_str(),
+            Some("object"),
+            "tool `{}` inputSchema.type must be \"object\" over stdio (Issue #30)",
+            t["name"]
+        );
+    }
+
     // A6: closing stdin makes the server exit on its own, cleanly.
     drop(stdin);
     let status = timeout(Duration::from_secs(10), child.wait())

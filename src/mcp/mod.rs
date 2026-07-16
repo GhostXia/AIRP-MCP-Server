@@ -103,12 +103,29 @@ impl AirpMcpServer {
 }
 
 fn to_schema(value: serde_json::Value) -> Arc<serde_json::Map<String, serde_json::Value>> {
-    Arc::new(
-        value
-            .as_object()
-            .expect("schema must be JSON object")
-            .clone(),
-    )
+    // `value` is owned — pattern-match to move the Map out instead of cloning
+    // (the schema Map can be deeply nested with per-property descriptions).
+    let mut map = match value {
+        serde_json::Value::Object(map) => map,
+        _ => panic!("schema must be JSON object"),
+    };
+    // Issue #30: some MCP adapters / OpenAI-compatible providers (e.g. DeepSeek
+    // via Pi) drop or null out the top-level `type` during JSON Schema →
+    // tools[].function.parameters conversion, producing
+    // `schema must be a JSON Schema of 'type: "object"', got 'type: null'`.
+    // Pin both `type` and `required` explicitly so every tool's inputSchema is
+    // self-contained and survives downstream conversion unchanged. Empty
+    // `required: []` is valid JSON Schema and does not change parameter
+    // semantics (e.g. import_card's mutually-exclusive png_path/png_base64
+    // pair stays optional-at-schema-level; the handler still enforces
+    // exactly-one). `or_insert_with` preserves any pre-existing value, so
+    // tools that already declare `required` (e.g. import_preset's
+    // `["preset_id"]`) are not overwritten.
+    map.entry("type")
+        .or_insert_with(|| serde_json::Value::String("object".to_string()));
+    map.entry("required")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    Arc::new(map)
 }
 
 fn value_from_map(map: serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
@@ -193,46 +210,7 @@ impl ServerHandler for AirpMcpServer {
         Ok(ListToolsResult {
             meta: None,
             next_cursor: None,
-            tools: vec![
-                import_card_tool(),
-                list_characters_tool(),
-                get_character_tool(),
-                delete_character_tool(),
-                start_session_tool(),
-                list_sessions_tool(),
-                append_message_tool(),
-                get_recent_context_tool(),
-                apply_lorebook_tool(),
-                update_lorebook_tool(),
-                update_state_tool(),
-                get_live_state_tool(),
-                seal_volume_tool(),
-                list_presets_tool(),
-                get_preset_tool(),
-                decompose_character_tool(),
-                decompose_preset_tool(),
-                rollback_messages_tool(),
-                analyze_card_tool(),
-                get_gating_status_tool(),
-                import_preset_tool(),
-                write_preset_artifact_tool(),
-                list_preset_regex_scripts_tool(),
-                remove_preset_regex_script_tool(),
-                set_preset_regex_enabled_tool(),
-                create_scene_tool(),
-                list_scenes_tool(),
-                get_scene_tool(),
-                add_character_to_scene_tool(),
-                merge_lorebooks_tool(),
-                build_scene_system_prompt_tool(),
-                export_context_bundle_tool(),
-                plugin_kv_get_tool(),
-                plugin_kv_set_tool(),
-                plugin_jsonl_append_tool(),
-                plugin_jsonl_read_tool(),
-                plugin_blob_write_tool(),
-                plugin_blob_read_tool(),
-            ],
+            tools: all_tools(),
         })
     }
 
@@ -590,6 +568,52 @@ impl ServerHandler for AirpMcpServer {
 }
 
 // Tool definitions
+
+/// The full tool registry served by `list_tools`. Centralized so the unit test
+/// can derive coverage from the same source as the runtime, preventing drift
+/// between the production registry and the regression assertions (Issue #30).
+fn all_tools() -> Vec<Tool> {
+    vec![
+        import_card_tool(),
+        list_characters_tool(),
+        get_character_tool(),
+        delete_character_tool(),
+        start_session_tool(),
+        list_sessions_tool(),
+        append_message_tool(),
+        get_recent_context_tool(),
+        apply_lorebook_tool(),
+        update_lorebook_tool(),
+        update_state_tool(),
+        get_live_state_tool(),
+        seal_volume_tool(),
+        list_presets_tool(),
+        get_preset_tool(),
+        decompose_character_tool(),
+        decompose_preset_tool(),
+        rollback_messages_tool(),
+        analyze_card_tool(),
+        get_gating_status_tool(),
+        import_preset_tool(),
+        write_preset_artifact_tool(),
+        list_preset_regex_scripts_tool(),
+        remove_preset_regex_script_tool(),
+        set_preset_regex_enabled_tool(),
+        create_scene_tool(),
+        list_scenes_tool(),
+        get_scene_tool(),
+        add_character_to_scene_tool(),
+        merge_lorebooks_tool(),
+        build_scene_system_prompt_tool(),
+        export_context_bundle_tool(),
+        plugin_kv_get_tool(),
+        plugin_kv_set_tool(),
+        plugin_jsonl_append_tool(),
+        plugin_jsonl_read_tool(),
+        plugin_blob_write_tool(),
+        plugin_blob_read_tool(),
+    ]
+}
 
 fn import_card_tool() -> Tool {
     Tool::new(
@@ -1391,5 +1415,108 @@ mod tests {
         let result = truncate_with_notice(&large, "custom hint text");
         assert!(result.contains("custom hint text"));
         assert!(!result.contains("decompose_character"));
+    }
+
+    /// Issue #30: every tool's inputSchema must carry a top-level
+    /// `type: "object"` and an explicit `required` array, so the schema
+    /// survives downstream MCP-adapter / OpenAI-compatible-provider
+    /// conversion (DeepSeek via Pi was receiving `type: null` and rejecting
+    /// `import_card`). This pins the contract at the schema-construction
+    /// layer, independent of transport. The tool list is derived from
+    /// `all_tools()` — the same source as the runtime `list_tools` response —
+    /// so the registry cannot drift between production and this assertion.
+    #[test]
+    fn all_tool_schemas_have_object_type_and_required() {
+        let tools = all_tools();
+        assert_eq!(
+            tools.len(),
+            38,
+            "registry size drifted; update the transport-level counts too"
+        );
+
+        // Representative tools whose source schema OMITS `required` — to_schema
+        // must synthesize an empty array, not null and not a non-empty default.
+        let expect_empty_required = [
+            "import_card",
+            "list_characters",
+            "list_presets",
+            "list_scenes",
+        ];
+        // Representative tools whose source schema DECLARES `required` —
+        // to_schema must preserve it verbatim, not overwrite with [].
+        let expect_preset_id_required = ["import_preset", "get_preset", "get_character"];
+        // Map name -> expected required (as Vec<&str>) for the strong cases.
+        let expected_required: &[(&str, &[&str])] = &[
+            ("import_card", &[]),
+            ("list_characters", &[]),
+            ("list_presets", &[]),
+            ("list_scenes", &[]),
+            ("import_preset", &["preset_id"]),
+            ("get_preset", &["preset_id"]),
+            ("get_character", &["character_id"]),
+            (
+                "append_message",
+                &["character_id", "session_id", "role", "content"],
+            ),
+        ];
+
+        for tool in &tools {
+            let schema = tool.input_schema.as_ref();
+            assert_eq!(
+                schema["type"].as_str(),
+                Some("object"),
+                "tool `{}` inputSchema.type must be \"object\" (Issue #30)",
+                tool.name
+            );
+            let required = schema
+                .get("required")
+                .and_then(|r| r.as_array())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "tool `{}` inputSchema must carry an explicit `required` array (Issue #30)",
+                        tool.name
+                    )
+                });
+            // Required entries must all be strings (JSON Schema constraint).
+            for r in required {
+                assert!(
+                    r.is_string(),
+                    "tool `{}` required entry must be a string, got: {} (Issue #30)",
+                    tool.name,
+                    r
+                );
+            }
+
+            let name = tool.name.as_ref();
+            if expect_empty_required.contains(&name) {
+                assert!(
+                    required.is_empty(),
+                    "tool `{}` should have an empty required[] (to_schema synthesized default), got: {:?}",
+                    name,
+                    required
+                );
+            }
+            if let Some((_, expected)) = expected_required.iter().find(|(n, _)| *n == name) {
+                let actual: Vec<&str> = required
+                    .iter()
+                    .map(|v| v.as_str().unwrap_or("<non-string>"))
+                    .collect();
+                assert_eq!(
+                    actual, *expected,
+                    "tool `{}` required[] must be preserved verbatim by to_schema (Issue #30)",
+                    name
+                );
+            }
+            // Tools that declare required must NOT be in the empty-required set
+            // (catches accidental overwrite of declared required with []).
+            if !required.is_empty() {
+                assert!(
+                    !expect_empty_required.contains(&name),
+                    "tool `{}` declares required but is in the expect-empty set (drift)",
+                    name
+                );
+            }
+            let _ = expect_preset_id_required; // documented intent; kept for future expansion
+        }
     }
 }

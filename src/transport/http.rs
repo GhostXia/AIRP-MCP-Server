@@ -337,5 +337,20 @@ mod tests {
             tools.iter().any(|t| t["name"] == "list_characters"),
             "registry must include list_characters"
         );
+
+        // Issue #30: every tool's inputSchema must carry a top-level
+        // `type: "object"` over the wire, so strict OpenAI-compatible
+        // providers (e.g. DeepSeek via Pi) don't reject the schema with
+        // `got 'type: null'`. Assert the on-the-wire payload, not just the
+        // in-process schema, to catch any transport-layer serialization
+        // drop.
+        for t in tools {
+            assert_eq!(
+                t["inputSchema"]["type"].as_str(),
+                Some("object"),
+                "tool `{}` inputSchema.type must be \"object\" over HTTP (Issue #30)",
+                t["name"]
+            );
+        }
     }
 }
