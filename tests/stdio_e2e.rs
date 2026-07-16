@@ -148,7 +148,10 @@ async fn stdio_handshake_then_tool_call_returns_real_data() {
     )
     .await;
     let listed = read_response(&mut stdout, 3).await;
-    assert!(listed.get("error").is_none(), "tools/list errored: {listed}");
+    assert!(
+        listed.get("error").is_none(),
+        "tools/list errored: {listed}"
+    );
     let tools = listed["result"]["tools"]
         .as_array()
         .unwrap_or_else(|| panic!("tools/list must return a tools array: {listed}"));

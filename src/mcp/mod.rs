@@ -1466,11 +1466,14 @@ mod tests {
             assert_eq!(
                 schema["type"].as_str(),
                 Some("object"),
-            "tool `{}` inputSchema.type must be \"object\" (Issue #30)",
-            tool.name
+                "tool `{}` inputSchema.type must be \"object\" (Issue #30)",
+                tool.name
             );
             assert!(
-                schema.get("required").map(|r| r.is_array()).unwrap_or(false),
+                schema
+                    .get("required")
+                    .map(|r| r.is_array())
+                    .unwrap_or(false),
                 "tool `{}` inputSchema must carry an explicit `required` array (Issue #30)",
                 tool.name
             );
