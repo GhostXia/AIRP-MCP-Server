@@ -219,6 +219,9 @@ impl<'a> CharacterStore<'a> {
         use std::io::Cursor;
 
         let mut decoder = png::Decoder::new(Cursor::new(png_data));
+        // Use IDENTITY so tEXt/zTXt ancillary chunks are preserved.
+        // The default normalize() transformation strips them.
+        decoder.set_transformations(png::Transformations::IDENTITY);
         // Bound decoder allocation to limit zlib decompression-bomb expansion.
         decoder.set_limits(png::Limits {
             bytes: 64 * 1024 * 1024,
