@@ -85,17 +85,8 @@ pub struct PresetId(pub String);
 impl PresetId {
     pub fn new(id: impl Into<String>) -> crate::error::Result<Self> {
         let id = id.into();
-        if id
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        {
-            Ok(Self(id))
-        } else {
-            Err(crate::error::AirpError::InvalidId(format!(
-                "Preset ID must be alphanumeric with hyphens/underscores: {}",
-                id
-            )))
-        }
+        crate::storage::validate_id_segment(&id)?;
+        Ok(Self(id))
     }
 }
 

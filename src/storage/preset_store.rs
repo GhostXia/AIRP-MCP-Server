@@ -55,10 +55,13 @@ impl<'a> PresetStore<'a> {
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                if let Ok(json) = fs::read_to_string(&path).await {
-                    if let Ok(preset) = serde_json::from_str::<Preset>(&json) {
-                        presets.push(preset);
+            if path.is_dir() {
+                let preset_json = path.join("preset.json");
+                if preset_json.exists() {
+                    if let Ok(json) = fs::read_to_string(&preset_json).await {
+                        if let Ok(preset) = serde_json::from_str::<Preset>(&json) {
+                            presets.push(preset);
+                        }
                     }
                 }
             }
@@ -67,15 +70,18 @@ impl<'a> PresetStore<'a> {
         Ok(presets)
     }
 
-    /// Delete preset
+    /// Delete preset (removes the directory tree)
     pub async fn delete(&self, id: &PresetId) -> Result<()> {
-        let preset_path = self.preset_path(id);
+        let preset_dir = self
+            .storage
+            .presets_dir()
+            .join(id.as_ref());
 
-        if !preset_path.exists() {
+        if !preset_dir.exists() {
             return Err(AirpError::PresetNotFound(id.as_ref().to_string()));
         }
 
-        fs::remove_file(&preset_path).await?;
+        fs::remove_dir_all(&preset_dir).await?;
         info!("Deleted preset: {}", id.as_ref());
 
         Ok(())
@@ -84,6 +90,7 @@ impl<'a> PresetStore<'a> {
     fn preset_path(&self, id: &PresetId) -> std::path::PathBuf {
         self.storage
             .presets_dir()
-            .join(format!("{}.json", id.as_ref()))
+            .join(id.as_ref())
+            .join("preset.json")
     }
 }

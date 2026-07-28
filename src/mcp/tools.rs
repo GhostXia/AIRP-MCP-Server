@@ -4,6 +4,7 @@ use super::AirpMcpServer;
 use crate::error::{AirpError, Result};
 use crate::models::gating::GatingConfig;
 use crate::models::*;
+use crate::models::preset::RegexScript;
 use crate::storage::*;
 use serde_json::Value;
 
@@ -1546,25 +1547,81 @@ impl AirpMcpServer {
             }
         };
 
-        // Validate JSON before writing (catches corruption early).
+        // Parse raw SillyTavern preset and convert to AIRP Preset format.
         let preset_str = String::from_utf8(preset_bytes)
             .map_err(|_| AirpError::Validation("preset content is not valid UTF-8".to_string()))?;
-        let _: serde_json::Value = serde_json::from_str(&preset_str)
+        let raw: serde_json::Value = serde_json::from_str(&preset_str)
             .map_err(|e| AirpError::Validation(format!("preset is not valid JSON: {}", e)))?;
 
-        let bytes_read = preset_str.len();
+        let name = raw.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(preset_id)
+            .to_string();
+
+        let config = PresetConfig {
+            system_prompt_prefix: String::new(),
+            system_prompt_suffix: String::new(),
+            temperature: raw.get("temperature").and_then(|v| v.as_f64()).unwrap_or(0.7) as f32,
+            top_p: raw.get("top_p").and_then(|v| v.as_f64()).unwrap_or(0.9) as f32,
+            top_k: raw.get("top_k").and_then(|v| v.as_i64()).unwrap_or(40) as i32,
+            repetition_penalty: raw.get("repetition_penalty").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32,
+            max_tokens: raw.get("openai_max_tokens")
+                .or_else(|| raw.get("max_tokens"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(2048) as i32,
+            stop_sequences: raw.get("stop_sequences")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+                })
+                .unwrap_or_default(),
+            regex_scripts: raw
+                .get("extensions")
+                .and_then(|ext| {
+                    // Try SPreset (LunarEclipse format) first, fall back to direct
+                    ext.get("SPreset")
+                        .and_then(|s| s.get("RegexBinding"))
+                        .or_else(|| ext.get("RegexBinding"))
+                })
+                .and_then(|rb| rb.get("regexes"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter().filter_map(|r| {
+                        Some(RegexScript {
+                            id: r.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            name: r.get("scriptName").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            find: r.get("findRegex").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            replace: r.get("replaceString").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            enabled: !r.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                        })
+                    }).collect()
+                })
+                .unwrap_or_default(),
+        };
+
+        let preset = Preset {
+            id: PresetId::new(preset_id)?,
+            name: name.clone(),
+            config,
+        };
+
+        let output = serde_json::to_string_pretty(&preset)
+            .map_err(|e| AirpError::Validation(format!("failed to serialize preset: {}", e)))?;
+
+        let bytes_read = output.len();
 
         let preset_path = self.storage.preset_json_path(preset_id);
         if let Some(parent) = preset_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&preset_path, &preset_str).await?;
+        tokio::fs::write(&preset_path, &output).await?;
 
         Ok(serde_json::json!({
             "preset_id": preset_id,
             "path": preset_path.to_string_lossy(),
             "bytes_read": bytes_read,
             "source": source_label,
+            "name": name.clone(),
         })
         .to_string())
     }
