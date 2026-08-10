@@ -336,15 +336,17 @@ Read these files in order:
 5. `{decomposed_dir}/characters/{character_id}/state_schema.md`
 
 ### Step 2: Read Preset (if specified)
-If preset specified, read:
-- `{decomposed_dir}/presets/{{{{preset_id}}}}/system_prompt.md`
+If preset specified, read its raw sidecar and manifest.  AIRP keeps the source
+JSON lossless; the Agent decides how to apply `prompts`, `prompt_order`, and
+unknown fields.  Only a legacy AIRP preset's explicit nested `config` anchors
+are available as prefix/suffix text.
+- `{decomposed_dir}/presets/{{{{preset_id}}}}/preset_raw.json`
+- `{decomposed_dir}/presets/{{{{preset_id}}}}/manifest.json`
 
 ### Step 3: Assemble System Prompt
 Assemble in this order:
 
 ```
-[Preset Prefix (if any)]
-
 # Character Setting
 
 ## Basic Info
@@ -362,7 +364,6 @@ Assemble in this order:
 ## Current State
 {{{{state content (if any)}}}}
 
-[Preset Suffix (if any)]
 ```
 
 ### Step 4: Load Lorebook
@@ -462,7 +463,9 @@ If user wants to start fresh, use `rollback_messages` to clear current session.
             r#"You are a preset analysis Agent. Analyze preset `{pid}` by following these steps:
 
 **Step 1: Read the Preset**
-Read `airp://presets/{pid}/raw` to get the full SillyTavern Preset JSON.
+Use `read_preset_raw` pages (preserving `revision` and `next_offset`) or
+`read_preset_structure` with RFC6901 pointers.  The legacy raw resource may be
+truncated; AIRP keeps the source opaque and does not run a prompt manager.
 
 **Step 2: Generate Analysis Artifacts** (call `write_preset_artifact` for each):
 - `analysis/summary.md` — Prompt list, order, and purpose of each segment
@@ -607,38 +610,35 @@ If you find fragments you cannot identify, do NOT delete them. Instead:\n\
 ## User feedback
 {feedback}
 
-## Why this works
-The preset was successfully injected — the model already writes in the preset's
-style. So the fix is the preset CONTENT itself, not regeneration. Editing the
-source preset is permanent and reused every turn (cheap, high-leverage). Do NOT
-post-process the generated text.
+## Working model
+AIRP stores the source preset losslessly and does not emulate SillyTavern's
+Prompt Manager.  Inspect the raw structure, then change only the source fields
+that the user asked about.  Editing the source is permanent and reused by
+future Agent calls; do not post-process generated text as a substitute.
 
 ## Steps
 1. Read the current preset: `airp://presets/{pid}/raw`. Note: this is capped
-   at ~32 KiB by `AIRP_MAX_READ_BYTES`; if you see a `[PARTIAL: ...]` marker,
-   the preset is larger — use `decompose_preset` for structured access instead
-   of paging through the raw JSON.
+   with `read_preset_raw` pages (preserve `revision` and continue with
+   `next_offset`), or use `read_preset_structure` for typed RFC6901 access.
 2. Diagnose what in the preset causes the complaint. Common culprits:
    - **Stiff / lifeless prose** on a strong model: the preset may carry
      model-specific suppression (anti-verbosity, anti-divergence, anti-refusal
      scaffolding) tuned for a DIFFERENT model. On a model that is already
      controlled, that over-suppresses → flat. Relax or remove those parts.
-   - Missing positive style direction → add an explicit vivid-prose / sensory /
-     pacing instruction in `system_prompt_prefix` or `system_prompt_suffix`.
+   - Missing positive style direction → add it to the source field used by the
+     selected Agent/model; AIRP does not infer a prompt-manager slot.
    - No voice anchors → ensure the character card's dialogue examples are used
      (build_scene_system_prompt supports `style_enhance: true`).
-3. Apply the minimal change. Write the modified full preset JSON to a file,
+3. Apply the minimal change. Write the modified source JSON to a file,
    then import it back with `import_preset(preset_id={pid}, preset_path=<file>)`
    — keep every field you are not changing. Prefer `preset_path` over
    `preset_json`: the full JSON can exceed JSON-RPC request-body limits in
    clients like Claude Desktop, and `preset_path` keeps the content out of
    the model context.
-4. **Verify by diff, not by re-reading raw**: after `import_preset` succeeds,
-   confirm the change by reading the specific field you edited (e.g.
-   `airp://presets/{{pid}}/artifacts` for artifact-level checks) or by
-   re-running the scene. Do NOT re-read `airp://presets/{pid}/raw` to
-   "confirm" — on large presets it will be truncated and you may misjudge
-   the result, leading to a pointless rewrite loop.
+4. **Verify by revision-aware reads**: after `import_preset` succeeds, read the
+   specific field with `read_preset_structure` or continue `read_preset_raw`
+   using the returned revision; do not assume a truncated legacy resource is a
+   complete document.
 5. Report exactly what you changed and why, so the user can judge / revert.
 
 ## Boundaries

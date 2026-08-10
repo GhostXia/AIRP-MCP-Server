@@ -95,7 +95,8 @@ impl CharacterDecomposer {
         files_written.push(path.display().to_string());
 
         Ok(DecomposeResult {
-            character_id: character.id.clone(),
+            character_id: Some(character.id.clone()),
+            preset_id: None,
             target_dir: target_dir.display().to_string(),
             files_written,
             needs_enhancement: config.enhance_analysis,
@@ -461,9 +462,13 @@ impl PresetDecomposer {
         preset: &Preset,
         config: &DecomposeConfig,
     ) -> Result<DecomposeResult> {
+        // Validate the preset identifier before creating any output.  A
+        // PresetId is not a CharacterId (dots are valid in preset IDs), so do
+        // not coerce it through the character identifier type.
+        let preset_id = PresetId::new(preset.id.as_ref().to_string())?;
         let target_dir = std::path::Path::new(&config.target_dir)
             .join("presets")
-            .join(preset.id.as_ref());
+            .join(preset_id.as_ref());
 
         fs::create_dir_all(&target_dir).await?;
 
@@ -494,7 +499,8 @@ impl PresetDecomposer {
         files_written.push(path.display().to_string());
 
         Ok(DecomposeResult {
-            character_id: CharacterId::new(preset.id.as_ref())?,
+            character_id: None,
+            preset_id: Some(preset_id),
             target_dir: target_dir.display().to_string(),
             files_written,
             needs_enhancement: false,
@@ -505,22 +511,17 @@ impl PresetDecomposer {
         format!(
             r#"# 系统提示词
 
-## 前缀
+## AIRP 运行时锚点（仅 legacy nested config）
 ```
 {prefix}
 ```
 
-## 主体
-<!-- 由角色卡的各模块组合而成 -->
-<!-- 组装顺序： -->
-<!-- 1. 前缀 -->
-<!-- 2. 角色基础信息 -->
-<!-- 3. 性格特征 -->
-<!-- 4. 世界观设定 -->
-<!-- 5. 当前状态（如有） -->
-<!-- 6. 后缀 -->
+## Raw source assembly
+<!-- preset_raw.json is authoritative.  AIRP does not emulate the
+     SillyTavern Prompt Manager: prompts/prompt_order and unknown fields stay
+     opaque, and the Agent decides how to apply them. -->
 
-## 后缀
+## Legacy nested-config suffix
 ```
 {suffix}
 ```
@@ -628,7 +629,10 @@ impl PresetDecomposer {
 /// 拆解结果
 #[derive(Debug, Clone)]
 pub struct DecomposeResult {
-    pub character_id: CharacterId,
+    /// Set for character decompositions; `None` for preset decompositions.
+    pub character_id: Option<CharacterId>,
+    /// Set for preset decompositions; `None` for character decompositions.
+    pub preset_id: Option<PresetId>,
     pub target_dir: String,
     pub files_written: Vec<String>,
     pub needs_enhancement: bool,

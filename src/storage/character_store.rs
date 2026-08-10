@@ -1,5 +1,7 @@
 //! Character storage operations
 
+use std::io::{Cursor, Read};
+
 use tokio::fs;
 use tracing::info;
 
@@ -216,43 +218,34 @@ impl<'a> CharacterStore<'a> {
     ///
     /// Returns `(CharacterCard, Option<Lorebook>)`.
     async fn parse_png_card(&self, png_data: &[u8]) -> Result<(CharacterCard, Option<Lorebook>)> {
-        use std::io::Cursor;
+        // `png::Reader::read_info` stops at the first IDAT chunk.  Metadata
+        // after IDAT is therefore not guaranteed to be present in
+        // `reader.info()`.  Scan the complete chunk stream ourselves (up to
+        // IEND), then let the PNG decoder validate/decode the image.  The two
+        // paths are intentionally separate: no decoder transformation setting
+        // is used as a workaround for metadata ordering.
+        let chunks = scan_png_card_chunks(png_data)?;
+        validate_png_image(png_data)?;
 
-        let mut decoder = png::Decoder::new(Cursor::new(png_data));
-        // Bound decoder allocation to limit zlib decompression-bomb expansion.
-        decoder.set_limits(png::Limits {
-            bytes: 64 * 1024 * 1024,
-        });
-        let reader = decoder
-            .read_info()
-            .map_err(|e| AirpError::PngParse(e.to_string()))?;
-
-        // V3: look for `ccv3` in tEXt chunks first (spec: tEXt, base64-encoded JSON).
-        for chunk in reader.info().uncompressed_latin1_text.iter() {
-            if chunk.keyword == "ccv3" {
-                // tEXt chunks store text already-decoded in .text (no decompression needed).
-                let decoded = base64_decode(&chunk.text)?;
-                return parse_v3_json(&decoded);
-            }
+        // V3 is authoritative whenever a ccv3 chunk exists, regardless of
+        // where it appears in the PNG or whether a chara chunk appeared first.
+        if let Some(text) = chunks.ccv3 {
+            let decoded = decode_card_text(text)?;
+            return parse_v3_json(&decoded);
         }
 
-        // V2: look for `chara` in zTXt chunks (zlib-compressed base64 JSON).
-        for chunk in reader.info().compressed_latin1_text.iter() {
-            if chunk.keyword == "chara" {
-                let text = chunk
-                    .get_text()
-                    .map_err(|e| AirpError::PngParse(format!("ZTXt decode error: {}", e)))?;
-                let decoded = base64_decode(&text)?;
-                return parse_card_json(&decoded);
-            }
+        // Prefer compressed chara when both V2 encodings are present.  This
+        // preserves the historical parser behaviour while still supporting
+        // post-IDAT chunks.
+        if let Some(compressed) = chunks.chara_ztxt {
+            let text = decompress_ztxt_bounded(compressed)?;
+            let decoded = decode_card_text(&text)?;
+            return parse_card_json(&decoded);
         }
 
-        // V2 fallback: some cards store `chara` in uncompressed tEXt chunks.
-        for chunk in reader.info().uncompressed_latin1_text.iter() {
-            if chunk.keyword == "chara" {
-                let decoded = base64_decode(&chunk.text)?;
-                return parse_card_json(&decoded);
-            }
+        if let Some(text) = chunks.chara_text {
+            let decoded = decode_card_text(text)?;
+            return parse_card_json(&decoded);
         }
 
         Err(AirpError::PngParse(
@@ -268,12 +261,285 @@ fn sanitize_id(name: &str) -> String {
         .replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "")
 }
 
-/// Base64 decode helper
+/// Maximum amount of text accepted from a card metadata chunk.  This bounds
+/// the input to base64 decoding and JSON parsing; zTXt is additionally capped
+/// while it is being decompressed below.
+const MAX_CARD_TEXT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Base64 decode helper with a pre-allocation guard.
 fn base64_decode(input: &str) -> Result<Vec<u8>> {
+    if input.len() > MAX_CARD_TEXT_BYTES {
+        return Err(AirpError::PngParse(format!(
+            "card metadata exceeds {} byte limit",
+            MAX_CARD_TEXT_BYTES
+        )));
+    }
+
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
         .decode(input)
         .map_err(|e| AirpError::PngParse(format!("Base64 decode error: {}", e)))
+}
+
+/// Decode base64 text borrowed from a PNG chunk without first allocating a
+/// `String`.  The text is ASCII by definition for card payloads, but the
+/// explicit UTF-8 check gives a useful parse error for malformed chunks.
+fn decode_card_text(input: &[u8]) -> Result<Vec<u8>> {
+    if input.len() > MAX_CARD_TEXT_BYTES {
+        return Err(AirpError::PngParse(format!(
+            "card metadata exceeds {} byte limit",
+            MAX_CARD_TEXT_BYTES
+        )));
+    }
+    let text = std::str::from_utf8(input)
+        .map_err(|e| AirpError::PngParse(format!("Card metadata is not UTF-8: {}", e)))?;
+    base64_decode(text)
+}
+
+/// Decompress a zTXt payload with an explicit output cap.  `Read::take` lets
+/// us detect an expansion beyond the cap while never allocating the full
+/// decompressed stream.  This check runs before base64 decoding or JSON
+/// parsing, so a high-compression-ratio payload is rejected early.
+fn decompress_ztxt_bounded(input: &[u8]) -> Result<Vec<u8>> {
+    let decoder = flate2::read::ZlibDecoder::new(input);
+    let mut limited = decoder.take((MAX_CARD_TEXT_BYTES as u64) + 1);
+    let mut output = Vec::new();
+    limited
+        .read_to_end(&mut output)
+        .map_err(|e| AirpError::PngParse(format!("ZTXt decode error: {}", e)))?;
+
+    if output.len() > MAX_CARD_TEXT_BYTES {
+        return Err(AirpError::PngParse(format!(
+            "ZTXt metadata exceeds {} byte decompressed limit",
+            MAX_CARD_TEXT_BYTES
+        )));
+    }
+
+    Ok(output)
+}
+
+/// References to card metadata discovered while scanning the complete PNG.
+/// Slices borrow the caller's PNG buffer, avoiding copies of ignored chunks
+/// (for example a chara fallback when ccv3 is present).
+struct PngCardChunks<'a> {
+    ccv3: Option<&'a [u8]>,
+    chara_text: Option<&'a [u8]>,
+    // For zTXt this is the compressed stream (the keyword and compression
+    // method byte have already been removed).
+    chara_ztxt: Option<&'a [u8]>,
+}
+
+/// Scan PNG chunks through IEND and collect card metadata.  The scanner is
+/// deliberately independent of `png::Reader::info()`: ancillary chunks may
+/// legally occur after IDAT, and `read_info` does not expose those chunks.
+fn scan_png_card_chunks<'a>(png_data: &'a [u8]) -> Result<PngCardChunks<'a>> {
+    const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+
+    if png_data.len() < PNG_SIGNATURE.len() || png_data[..8] != PNG_SIGNATURE {
+        return Err(AirpError::PngParse("Invalid PNG signature".to_string()));
+    }
+
+    let mut offset = PNG_SIGNATURE.len();
+    let mut ccv3 = None;
+    let mut chara_text = None;
+    let mut chara_ztxt = None;
+    let mut saw_iend = false;
+
+    while offset < png_data.len() {
+        // length (4) + type (4) + CRC (4), before considering chunk data.
+        if png_data.len() - offset < 12 {
+            return Err(AirpError::PngParse(
+                "Truncated PNG chunk header".to_string(),
+            ));
+        }
+
+        let data_len = u32::from_be_bytes([
+            png_data[offset],
+            png_data[offset + 1],
+            png_data[offset + 2],
+            png_data[offset + 3],
+        ]) as usize;
+        let data_start = offset + 8;
+        let data_end = data_start
+            .checked_add(data_len)
+            .ok_or_else(|| AirpError::PngParse("PNG chunk length overflow".to_string()))?;
+        let crc_end = data_end
+            .checked_add(4)
+            .ok_or_else(|| AirpError::PngParse("PNG chunk length overflow".to_string()))?;
+        if crc_end > png_data.len() {
+            return Err(AirpError::PngParse("Truncated PNG chunk data".to_string()));
+        }
+
+        let chunk_type = &png_data[offset + 4..offset + 8];
+        let chunk_data = &png_data[data_start..data_end];
+        let chunk_crc = &png_data[data_end..crc_end];
+
+        // `png::Decoder` skips ancillary chunks whose CRC is invalid by
+        // default.  Validate the checksum here as well so metadata and any
+        // other chunk encountered by the scanner cannot bypass PNG integrity
+        // checks.
+        verify_chunk_crc(chunk_type, chunk_data, chunk_crc)?;
+
+        match chunk_type {
+            b"tEXt" => {
+                if let Some((keyword, text)) = split_text_chunk(chunk_data)? {
+                    if keyword == b"ccv3" {
+                        if text.len() > MAX_CARD_TEXT_BYTES {
+                            return Err(AirpError::PngParse(format!(
+                                "ccv3 metadata exceeds {} byte limit",
+                                MAX_CARD_TEXT_BYTES
+                            )));
+                        }
+                        if ccv3.is_none() {
+                            ccv3 = Some(text);
+                        }
+                    } else if keyword == b"chara" {
+                        if text.len() > MAX_CARD_TEXT_BYTES {
+                            return Err(AirpError::PngParse(format!(
+                                "chara metadata exceeds {} byte limit",
+                                MAX_CARD_TEXT_BYTES
+                            )));
+                        }
+                        if chara_text.is_none() {
+                            chara_text = Some(text);
+                        }
+                    }
+                }
+            }
+            b"zTXt" => {
+                let (keyword, compressed) = split_ztxt_chunk(chunk_data)?;
+                if keyword == b"chara" && chara_ztxt.is_none() {
+                    chara_ztxt = Some(compressed);
+                }
+            }
+            b"IEND" => {
+                if !chunk_data.is_empty() {
+                    return Err(AirpError::PngParse("IEND chunk must be empty".to_string()));
+                }
+                saw_iend = true;
+                offset = crc_end;
+                break;
+            }
+            _ => {}
+        }
+
+        offset = crc_end;
+    }
+
+    if !saw_iend {
+        return Err(AirpError::PngParse("PNG missing IEND chunk".to_string()));
+    }
+
+    if offset != png_data.len() {
+        return Err(AirpError::PngParse(
+            "Trailing data after IEND chunk".to_string(),
+        ));
+    }
+
+    Ok(PngCardChunks {
+        ccv3,
+        chara_text,
+        chara_ztxt,
+    })
+}
+
+/// Verify the CRC stored at the end of a PNG chunk.  The `png` crate's
+/// high-level decoder intentionally skips ancillary CRC failures unless its
+/// decode options are changed, so the scanner keeps a direct check for every
+/// chunk it walks through.
+fn verify_chunk_crc(chunk_type: &[u8], chunk_data: &[u8], crc_bytes: &[u8]) -> Result<()> {
+    debug_assert_eq!(chunk_type.len(), 4);
+    debug_assert_eq!(crc_bytes.len(), 4);
+
+    let expected = u32::from_be_bytes([crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]);
+    let mut crc = 0xFFFF_FFFFu32;
+
+    for &byte in chunk_type.iter().chain(chunk_data.iter()) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+
+    let actual = !crc;
+    if actual != expected {
+        return Err(AirpError::PngParse(format!(
+            "PNG chunk CRC mismatch for {}",
+            String::from_utf8_lossy(chunk_type)
+        )));
+    }
+
+    Ok(())
+}
+
+fn split_text_chunk(data: &[u8]) -> Result<Option<(&[u8], &[u8])>> {
+    let Some(separator) = data.iter().position(|&byte| byte == 0) else {
+        return Err(AirpError::PngParse(
+            "Malformed tEXt chunk (missing keyword separator)".to_string(),
+        ));
+    };
+    let keyword = &data[..separator];
+    if keyword.is_empty() || keyword.len() > 79 {
+        return Err(AirpError::PngParse("Invalid PNG text keyword".to_string()));
+    }
+    Ok(Some((keyword, &data[separator + 1..])))
+}
+
+fn split_ztxt_chunk(data: &[u8]) -> Result<(&[u8], &[u8])> {
+    let Some(separator) = data.iter().position(|&byte| byte == 0) else {
+        return Err(AirpError::PngParse(
+            "Malformed zTXt chunk (missing keyword separator)".to_string(),
+        ));
+    };
+    let keyword = &data[..separator];
+    if keyword.is_empty() || keyword.len() > 79 {
+        return Err(AirpError::PngParse("Invalid PNG text keyword".to_string()));
+    }
+    if data.len() <= separator + 1 {
+        return Err(AirpError::PngParse(
+            "Malformed zTXt chunk (missing compression method)".to_string(),
+        ));
+    }
+    if data[separator + 1] != 0 {
+        return Err(AirpError::PngParse(
+            "Unsupported zTXt compression method".to_string(),
+        ));
+    }
+    let compressed = &data[separator + 2..];
+    if compressed.is_empty() {
+        return Err(AirpError::PngParse("Empty zTXt payload".to_string()));
+    }
+    Ok((keyword, compressed))
+}
+
+/// Ask the PNG decoder to validate and consume the image stream.  The manual
+/// scanner above guarantees that the complete chunk stream reaches IEND;
+/// this call provides CRC/format validation and bounds decoder allocations.
+fn validate_png_image(png_data: &[u8]) -> Result<()> {
+    let mut options = png::DecodeOptions::default();
+    // Ancillary CRC failures are skipped by default in png 0.17.  Character
+    // metadata can legally follow IDAT, so force the decoder to validate all
+    // chunks when it consumes the stream through IEND.
+    options.set_skip_ancillary_crc_failures(false);
+    let mut decoder = png::Decoder::new_with_options(Cursor::new(png_data), options);
+    decoder.set_limits(png::Limits {
+        bytes: 64 * 1024 * 1024,
+    });
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| AirpError::PngParse(e.to_string()))?;
+    let mut frame = vec![0; reader.output_buffer_size()];
+    reader
+        .next_frame(&mut frame)
+        .map_err(|e| AirpError::PngParse(e.to_string()))?;
+    reader
+        .finish()
+        .map_err(|e| AirpError::PngParse(e.to_string()))?;
+    Ok(())
 }
 
 /// Parse a character card JSON payload.

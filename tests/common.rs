@@ -116,6 +116,160 @@ pub fn v3_card_to_base64(card: &serde_json::Value) -> String {
     base64::engine::general_purpose::STANDARD.encode(&png_data)
 }
 
+/// Encode a V2/flat card into a PNG whose uncompressed `chara` tEXt chunk is
+/// placed after IDAT.  This mirrors exports that append metadata after image
+/// data and exercises the full-chunk scanner in the importer.
+pub fn post_idat_text_card_to_base64(card: &serde_json::Value) -> String {
+    use base64::Engine;
+
+    let card_json = serde_json::to_string(card).expect("Failed to serialize card");
+    let mut data = Vec::new();
+    data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    write_chunk(&mut data, b"IHDR", &create_ihdr(1, 1));
+    write_chunk(&mut data, b"IDAT", &create_idat());
+    let card_b64 = base64::engine::general_purpose::STANDARD.encode(card_json.as_bytes());
+    write_chunk(
+        &mut data,
+        b"tEXt",
+        &create_text_chunk(b"chara", card_b64.as_bytes()),
+    );
+    write_chunk(&mut data, b"IEND", &[]);
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Encode a V2/flat card into a PNG whose compressed `chara` zTXt chunk is
+/// placed after IDAT.
+pub fn post_idat_ztxt_card_to_base64(card: &serde_json::Value) -> String {
+    use base64::Engine;
+
+    let card_json = serde_json::to_string(card).expect("Failed to serialize card");
+    let mut data = Vec::new();
+    data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    write_chunk(&mut data, b"IHDR", &create_ihdr(1, 1));
+    write_chunk(&mut data, b"IDAT", &create_idat());
+    let card_b64 = base64::engine::general_purpose::STANDARD.encode(card_json.as_bytes());
+    write_chunk(
+        &mut data,
+        b"zTXt",
+        &create_ztext(b"chara", card_b64.as_bytes()),
+    );
+    write_chunk(&mut data, b"IEND", &[]);
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Encode a V2/flat card into a PNG whose post-IDAT `chara` tEXt chunk has an
+/// intentionally corrupted CRC.
+pub fn post_idat_text_card_with_bad_crc_to_base64(card: &serde_json::Value) -> String {
+    use base64::Engine;
+
+    let card_json = serde_json::to_string(card).expect("Failed to serialize card");
+    let mut data = Vec::new();
+    data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    write_chunk(&mut data, b"IHDR", &create_ihdr(1, 1));
+    write_chunk(&mut data, b"IDAT", &create_idat());
+    let card_b64 = base64::engine::general_purpose::STANDARD.encode(card_json.as_bytes());
+    write_chunk_with_bad_crc(
+        &mut data,
+        b"tEXt",
+        &create_text_chunk(b"chara", card_b64.as_bytes()),
+    );
+    write_chunk(&mut data, b"IEND", &[]);
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Encode a V2/flat card into a PNG whose post-IDAT `chara` zTXt chunk has an
+/// intentionally corrupted CRC.
+pub fn post_idat_ztxt_card_with_bad_crc_to_base64(card: &serde_json::Value) -> String {
+    use base64::Engine;
+
+    let card_json = serde_json::to_string(card).expect("Failed to serialize card");
+    let mut data = Vec::new();
+    data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    write_chunk(&mut data, b"IHDR", &create_ihdr(1, 1));
+    write_chunk(&mut data, b"IDAT", &create_idat());
+    let card_b64 = base64::engine::general_purpose::STANDARD.encode(card_json.as_bytes());
+    write_chunk_with_bad_crc(
+        &mut data,
+        b"zTXt",
+        &create_ztext(b"chara", card_b64.as_bytes()),
+    );
+    write_chunk(&mut data, b"IEND", &[]);
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Encode a valid card followed by an invalid trailing block after IEND.  A
+/// PNG parser must reject bytes after IEND even when the image itself decodes.
+pub fn post_idat_card_with_trailing_block_to_base64(card: &serde_json::Value) -> String {
+    use base64::Engine;
+
+    let card_json = serde_json::to_string(card).expect("Failed to serialize card");
+    let mut data = Vec::new();
+    data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    write_chunk(&mut data, b"IHDR", &create_ihdr(1, 1));
+    write_chunk(&mut data, b"IDAT", &create_idat());
+    let card_b64 = base64::engine::general_purpose::STANDARD.encode(card_json.as_bytes());
+    write_chunk(
+        &mut data,
+        b"tEXt",
+        &create_text_chunk(b"chara", card_b64.as_bytes()),
+    );
+    write_chunk(&mut data, b"IEND", &[]);
+    // Extra bytes after IEND are not part of a valid PNG.  Keep them chunk
+    // shaped to ensure a decoder cannot silently treat them as metadata.
+    data.extend_from_slice(&[0, 0, 0, 0]);
+    data.extend_from_slice(b"tEXt");
+    data.extend_from_slice(&[0, 0, 0, 0]);
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Build a PNG containing a fallback `chara` chunk followed by a post-IDAT
+/// `ccv3` chunk.  The importer must select ccv3 regardless of chunk order.
+pub fn post_idat_dual_card_to_base64(
+    ccv3_card: &serde_json::Value,
+    chara_card: &serde_json::Value,
+) -> String {
+    use base64::Engine;
+
+    let ccv3_json = serde_json::to_string(ccv3_card).expect("Failed to serialize V3 card");
+    let chara_json = serde_json::to_string(chara_card).expect("Failed to serialize V2 card");
+    let mut data = Vec::new();
+    data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    write_chunk(&mut data, b"IHDR", &create_ihdr(1, 1));
+    write_chunk(&mut data, b"IDAT", &create_idat());
+
+    let chara_b64 = base64::engine::general_purpose::STANDARD.encode(chara_json.as_bytes());
+    write_chunk(
+        &mut data,
+        b"zTXt",
+        &create_ztext(b"chara", chara_b64.as_bytes()),
+    );
+
+    let ccv3_b64 = base64::engine::general_purpose::STANDARD.encode(ccv3_json.as_bytes());
+    write_chunk(
+        &mut data,
+        b"tEXt",
+        &create_text_chunk(b"ccv3", ccv3_b64.as_bytes()),
+    );
+    write_chunk(&mut data, b"IEND", &[]);
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Build a high-compression-ratio zTXt payload.  The decompressed text is
+/// intentionally not valid base64: the importer should reject it at the
+/// decompression cap before attempting base64/JSON allocation.
+pub fn oversized_ztxt_card_to_base64() -> String {
+    use base64::Engine;
+
+    let oversized = vec![b'A'; 8 * 1024 * 1024 + 1];
+    let mut data = Vec::new();
+    data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+    write_chunk(&mut data, b"IHDR", &create_ihdr(1, 1));
+    write_chunk(&mut data, b"IDAT", &create_idat());
+    write_chunk(&mut data, b"zTXt", &create_ztext(b"chara", &oversized));
+    write_chunk(&mut data, b"IEND", &[]);
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
 /// Build a PNG with a `ccv3` tEXt chunk (uncompressed, V3 spec).
 fn build_minimal_png_v3(card_json: &str) -> Vec<u8> {
     use base64::Engine;
@@ -226,6 +380,12 @@ fn write_chunk(data: &mut Vec<u8>, chunk_type: &[u8; 4], chunk_data: &[u8]) {
     data.extend_from_slice(chunk_data);
     let crc = compute_crc(chunk_type, chunk_data);
     data.extend_from_slice(&crc.to_be_bytes());
+}
+
+fn write_chunk_with_bad_crc(data: &mut Vec<u8>, chunk_type: &[u8; 4], chunk_data: &[u8]) {
+    write_chunk(data, chunk_type, chunk_data);
+    let crc_start = data.len() - 4;
+    data[crc_start + 3] ^= 0xFF;
 }
 
 fn compute_crc(chunk_type: &[u8; 4], chunk_data: &[u8]) -> u32 {

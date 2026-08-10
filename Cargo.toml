@@ -54,9 +54,11 @@ clap = { version = "4.5", features = ["derive"] }
 # Base64 encoding/decoding
 base64 = "0.22"
 
+# Bounded zTXt decompression for PNG character cards
+flate2 = "1.0"
+
 [dev-dependencies]
 tempfile = "3.9"
 wiremock = "0.6"
-flate2 = "1.0"
 # ServiceExt::oneshot for in-process HTTP transport tests
 tower = { version = "0.5", features = ["util"] }

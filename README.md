@@ -80,7 +80,7 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 
 | 类别 | 工具 | 用途 |
 |:--|:--|:--|
-| 角色卡 | `import_card` | 导入 SillyTavern 角色卡。**推荐 `png_path`**（服务端读盘解析，base64 不进上下文、不烧 token、无大小限制）或 `png_base64`（≤ 10 MiB） |
+| 角色卡 | `import_card` | 导入 SillyTavern 角色卡。**推荐 `png_path`**（服务端读盘解析，base64 不进上下文、不烧 token，服务端上限 ≤ 256 MiB）或 `png_base64`（≤ 10 MiB） |
 | 角色卡 | `list_characters` | 列出所有角色 |
 | 角色卡 | `get_character` | 查看角色详情 |
 | 角色卡 | `delete_character` | 删除角色及所有数据 |
@@ -91,27 +91,29 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 | 会话 | `rollback_messages` | 回滚最后 N 条消息 |
 | 记忆 | `seal_volume` | 封存当前会话为归档卷（支持清空，省 token） |
 | 世界书 | `apply_lorebook` | 关键词扫描 → 返回匹配的世界书条目 |
-| 世界书 | `update_lorebook` | 更新世界书。**推荐 `lorebook_path`**（服务端读盘，JSON 不进上下文、绕过 JSON-RPC 请求体上限、无大小限制、兼容 SillyTavern 世界书格式）或 `entries`（内联 JSON 数组） |
+| 世界书 | `update_lorebook` | 更新世界书。**推荐 `lorebook_path`**（服务端读盘，JSON 不进上下文、绕过 JSON-RPC 请求体上限，服务端上限 ≤ 256 MiB，兼容 SillyTavern 世界书格式）或 `entries`（内联 JSON 数组） |
 | 状态 | `update_state` | 更新实时状态（HP / MP / 位置 / 关系值） |
 | 状态 | `get_live_state` | 获取当前状态 |
 | 分析 | `analyze_card` | 4 档分级角色卡分析（Tier 0–3） |
 | 分析 | `get_gating_status` | 查看检查点进度 |
 | 预设 | `list_presets` | 列出所有 AI 预设 |
 | 预设 | `get_preset` | 查看预设详情 |
-| 预设 | `import_preset` | 导入 SillyTavern 预设 JSON。**推荐 `preset_path`**（服务端读盘，JSON 不进上下文、绕过 JSON-RPC 请求体上限、无大小限制）或 `preset_json`（≤ 64 MiB） |
+| 预设 | `read_preset_raw` | 按原始 UTF-8 字节分页读取（含 BOM；带 revision/next_offset） |
+| 预设 | `read_preset_structure` | 按 RFC6901 pointer 分页读取保留类型、数组顺序和未知字段的结构化值 |
+| 预设 | `import_preset` | 导入 SillyTavern 预设 JSON。**推荐 `preset_path`**（服务端读盘，JSON 不进上下文、绕过 JSON-RPC 请求体上限，≤ 32 MiB）或 `preset_json`（≤ 16 MiB） |
 | 预设 | `write_preset_artifact` | Agent 写入预设分析产物 |
 | 预设 | `list_preset_regex_scripts` | 列出预设正则脚本（含元数据） |
 | 预设 | `remove_preset_regex_script` | 删除预设正则脚本 |
 | 预设 | `set_preset_regex_enabled` | 启用/禁用预设正则脚本 |
 | 拆解/导出 | `decompose_character` | 拆解角色卡为 7 个 Markdown 文件（分析模板，含 TODO 占位） |
-| 拆解/导出 | `decompose_preset` | 拆解预设为结构化文档 |
+| 拆解/导出 | `decompose_preset` | 生成摘要 Markdown，并附 `preset_raw.json` + `manifest.json` 无损 Agent 入口 |
 | 拆解/导出 | `export_context_bundle` | 导出**自包含成品**上下文包（`context.md` + raw sidecar），交接给隔离 subagent；可选 `thinking_mode_text` 置于正文最前；未知捆绑内容原样旁路不解析 |
 | 场景 | `create_scene` | 创建多角色场景 |
 | 场景 | `list_scenes` | 列出所有场景 |
 | 场景 | `get_scene` | 查看场景配置 |
 | 场景 | `add_character_to_scene` | 向场景添加角色 |
 | 场景 | `merge_lorebooks` | 合并多角色世界书（去重排序，纯算法） |
-| 场景 | `build_scene_system_prompt` | 装配多角色场景系统提示词（前载 union 世界书；可选 `style_enhance` 注入对话范例+suffix 文风锚） |
+| 场景 | `build_scene_system_prompt` | 装配多角色场景系统提示词（前载 union 世界书；可选角色对话范例；ST prompts/prompt_order 不注入） |
 | 插件 | `plugin_kv_get` / `plugin_kv_set` | 插件 KV（`plugins/{name}/{key}.json`，任意 JSON，零 schema） |
 | 插件 | `plugin_jsonl_append` / `plugin_jsonl_read` | 插件 JSONL（O(1) 追加 / 分页读，带字节上限） |
 | 插件 | `plugin_blob_write` / `plugin_blob_read` | 插件任意文件。读默认 `encoding=auto`：服务端探测 UTF-8 → 返文本；**二进制只返描述符不倒 base64**（乱码白烧 token），需要才 `encoding=base64`。单次 32 KiB raw |
@@ -133,7 +135,7 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 | `airp://characters/{id}/gating/checkpoints` | 检查点进度 |
 | `airp://presets` | 预设 ID 列表 |
 | `airp://presets/{id}` | 预设详情 |
-| `airp://presets/{id}/raw` | 预设原始 JSON（>32 KiB 截断 + `[PARTIAL]` 标记，用 `decompose_preset` 获取结构化访问） |
+| `airp://presets/{id}/raw` | 兼容旧客户端的预设原始 JSON 资源（大于 cap 时仍返回 `[PARTIAL]`；完整可续读请用 `read_preset_raw`） |
 | `airp://presets/{id}/artifacts` | 预设分析产物文件树 |
 | `airp://presets/{id}/regex` | 预设正则脚本列表 |
 | `airp://scenes` | 场景列表 |
@@ -146,7 +148,7 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 
 | Prompt | 用途 |
 |:--|:--|
-| `build_system_prompt` | 组装角色系统提示词（支持 preset 注入，含 mes_example） |
+| `build_system_prompt` | 组装角色系统提示词（仅 legacy AIRP config 的显式 anchors；ST raw prompts 由 Agent 自行应用，含 mes_example） |
 | `filter_text` | 应用预设正则过滤（八股后处理） |
 | `state_update_instruction` | 状态更新 `<state>` 格式说明 |
 | `seal_volume` | 卷封存 Agent 指导 |
@@ -256,7 +258,7 @@ cargo fmt
 AIRP 的威胁模型假设 **本地、单用户、stdio / loopback** 运行。基于此：
 
 - **路径安全**：所有插件/预设的读写经**组件式**校验 —— 拒 `..` 逃逸、拒绝对路径、拒符号链接，结果锁在 `data/` 根内（`Storage::safe_resolve_for_write`）。
-- **输入限制**：`import_card` 的 PNG ≤ 10 MiB（`png_path` 走 metadata 预检，炸弹文件不读即拒），PNG 解码器设分配上限（挡 zlib 压缩炸弹）；工具单次读 ≤ 32 KiB（≈9K token 文本；base64 约 1.33×；可用环境变量 `AIRP_MAX_READ_BYTES` 覆盖，下限 1 KiB）；`plugin_blob_read` 默认 `encoding=auto`，二进制只返描述符不倒 base64；预设 raw / JSONL 超限截断或分页。
+- **输入限制**：`import_card` 的 `png_base64` ≤ 10 MiB、`png_path` ≤ 256 MiB（均有 metadata/解码器安全检查，挡 zlib 压缩炸弹）；工具单次读 ≤ 32 KiB（≈9K token 文本；base64 约 1.33×；可用环境变量 `AIRP_MAX_READ_BYTES` 覆盖，下限 1 KiB）；`plugin_blob_read` 默认 `encoding=auto`，二进制只返描述符不倒 base64；预设 raw / JSONL 超限截断或分页。
 - **PNG 导入用 `png_path` 而非 `png_base64`**：让 AIRP **服务端直接读盘解析**，base64 **永不进模型上下文** —— 否则 Agent 为产生 base64 得先把 PNG 读进上下文（10 MiB 卡 ≈ 13 MiB 文本），**烧光 token**。
 - **插件信任模型**：`data/plugins/` 是**零 schema、开放接入**（戒律 4）—— AIRP 不解析、不校验、不沙箱化插件数据语义。插件写入被限制在自己的 `plugins/{name}/` 命名空间内（拒 `..`/绝对路径/符号链接），**但内容本身不受信任**。⚠️ **只安装可信来源的插件。**
 - **HTTP 暴露：局域网 OK，公网 NO**。`serve --bind` 支持同 wifi 下「电脑跑后端 + 手机对话」这类用法。

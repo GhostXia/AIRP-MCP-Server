@@ -35,7 +35,7 @@
 
 | 项 | 当前值 | 位置 | 说明 |
 |:--|:--|:--|:--|
-| 角色卡 PNG 上限 | 10 MiB | `src/mcp/tools.rs:15`（`MAX_PNG_BYTES`） | `import_card` 入口尺寸 / 防解压炸弹。env 化是 [ROADMAP](ROADMAP.md) §3「入口尺寸 cap」候选 |
+| 角色卡 PNG 上限 | `png_base64` 10 MiB；`png_path` 256 MiB | `src/mcp/tools.rs`（`MAX_PNG_BASE64_BYTES` / `MAX_PATH_READ_BYTES`） | `import_card` 入口尺寸 / 防解压炸弹。env 化是 [ROADMAP](ROADMAP.md) §3「入口尺寸 cap」候选 |
 | HTTP Host 校验 | 关闭 | `src/transport/http.rs`（`disable_allowed_hosts`） | 为 LAN 部署放开 rebind 守卫；安全模型 = bearer + 信任 LAN，勿暴露公网 |
 | CORS | 允许任意来源 | `build_router`（`src/transport/http.rs`） | 暴露 `mcp-session-id` / `mcp-protocol-version` 响应头给浏览器 |
 | 协议版本 | rmcp `LATEST`（自动） | `src/mcp/mod.rs`（`get_info`） | **不固化**；initialize 时 `min(client, server)` 协商向下兼容（见 §1.2） |
@@ -46,10 +46,14 @@
 
 **角色卡 / 预设 / 世界书 / 场景 / 状态 / 记忆**都是 `data-dir` 下的**用户数据**，经 MCP 工具增删改（`import_card` / `import_preset` / `create_scene` / `update_state` …），**不是配置项**。这才是 RP 体验的主要定制面。用法见 [README](../README.md) / [SKILL.md](../SKILL.md)。
 
+### 4.1 预设源与分页读取
+
+`presets/{id}/preset.json` 的原始 UTF-8 字节是唯一权威源；导入时保留 BOM、空白、`prompts`、`prompt_order` 与未知嵌套字段。AIRP 只提供无损拆解，不模拟 SillyTavern Prompt Manager，也不会把 ST 字段派生为 prefix/suffix。`read_preset_raw` 按字节分页并返回稳定 `revision`；`read_preset_structure` 用 RFC6901 `pointer` 分页返回带 JSON type 的对象/数组/字符串片段。旧 `airp://presets/{id}/raw` 资源仍保留，但超 cap 时继续使用兼容性的 `[PARTIAL]` 前缀。
+
 ---
 
 ## 5. 待定（计划中，尚未可配 —— 见 ROADMAP）
 
-- **入口尺寸 cap env 化**（`MAX_PNG_BYTES` / preset / blob / stdio 帧）—— §3 候选。
+- **入口尺寸 cap env 化**（PNG / preset / blob / stdio 帧）—— §3 候选。
 - **`--read-only` 启动开关**（不可信 Agent 下只读）—— §3 候选。
 - **软删除 `.trash`**（删除可逆）—— §2.D 候选。

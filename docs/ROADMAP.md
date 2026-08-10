@@ -1,7 +1,7 @@
 # AIRP-MCP-Server — 计划与护栏（ROADMAP）
 
 > **定位**：追踪「下一步做什么、为什么、以及**故意不做什么**」。不是功能介绍。
-> **真理顺序**：源码 > 本文档。冲突时先改文档再继续。
+> **真理顺序**：源码 > 本文档。冲突时先改文档再继续。本文档中的历史容量数字仅作变更记录，不构成当前 API 承诺。
 > 最后更新：2026-06-29（HEAD 不在文档固化 —— 每次合并即过时；查 `git log` 为准）
 
 ## 0. 判据（动手前先过这条）
@@ -25,7 +25,7 @@
 - **工具**：`gh` 已装已认证（建/合 PR、`gh run view <id> --log-failed` 读 CI 日志）。PowerShell 下**别对 gh/git 加 `2>&1`**（NativeCommandError + spinner 噪音会撑爆输出）；gh 一律 `--json`。多行 commit 用多个 `-m`，别写 `.git/*.txt` 临时文件。
 - **审查 bot**：CodeRabbit（自动审进 main 的 PR）、Gemini（**2026-07-17 停服**）、Codex（常超额度）。**bot 发现一律当「待核实声明」，核源码再定**（CodeRabbit 曾就 rmcp 版本协商发 🔴 误报）。
 - **代码地图**：
-  - 工具实现：`src/mcp/tools.rs`（`handle_*`）；工具/资源/提示词清单 + `ServerHandler`：`src/mcp/mod.rs`（`list_tools` 38 个）。
+  - 工具实现：`src/mcp/tools.rs`（`handle_*`）；工具/资源/提示词清单 + `ServerHandler`：`src/mcp/mod.rs`（`list_tools` 40 个，含 raw/structure 预设分页）。
   - 存储 + **路径沙箱**：`src/storage/`（`safe_resolve_for_write`、`validate_id_segment` 在 `mod.rs`，已被所有传路径的工具调用）。
   - 传输：`src/transport/`（`stdio.rs` / `http.rs`；HTTP 测试在 `http.rs` 的 `#[cfg(test)]`，跨进程 e2e 在 `tests/stdio_e2e.rs`）。
   - 拼装：工具 `build_scene_system_prompt` / `export_context_bundle`（Rust handler 为 `handle_*`，均在 `tools.rs`）。
@@ -152,7 +152,7 @@
 | **可观测性** | 生产部署 / 排障需要时 | 结构化日志已具；按需加请求级 tracing / 指标。**不为加而加** |
 | **健康/就绪探针** | 容器/编排部署时 | 已有 `/health`；需要时加 `/ready` |
 | **协议版本随 rmcp 升级** | rmcp 出新版 | 已吃 `LATEST`，自动跟进；只需确认 `min` 协商对新版仍成立 |
-| **入口尺寸 cap 补全** | 关注 stdio OOM 面时 | stdio 帧无上限、`plugin_blob_write` 无显式字节 cap（HTTP 有 axum 默认 ~2MB、`import_card` 的 `png_base64` 有 10 MiB cap 但 `png_path` 无限制、`import_preset` 的 `preset_json` 有 64 MiB cap 但 `preset_path` 无限制、`update_lorebook` 的 `lorebook_path` 无限制——所有 `_path` 参数内容不进模型上下文、用户读自己的文件、serde 递归 128 已兜底）。**读取端统一截断**：`read_character_card` / `read_character_lorebook` / `read_preset_raw` 均走 `truncate_for_context`（`AIRP_MAX_READ_BYTES` 默认 32 KiB，超限带 `[PARTIAL: ...]` 标记） |
+| **入口尺寸 cap 补全（历史记录）** | 关注 stdio OOM 面时 | 该条记录描述旧版上限；当前实现为 `import_card.png_path` ≤ 256 MiB、`import_preset.preset_path` ≤ 32 MiB、`preset_json` ≤ 16 MiB、`update_lorebook.lorebook_path` ≤ 256 MiB。所有 `_path` 参数内容不进模型上下文。**旧 raw resource 读取端统一截断**：`read_character_card` / `read_character_lorebook` / `airp://presets/{id}/raw` 均走 `truncate_for_context`（`AIRP_MAX_READ_BYTES` 默认 32 KiB，超限带 `[PARTIAL: ...]` 标记）；Agent 分页使用 `read_preset_raw`。 |
 | **酒馆前端 + agent 后端部署** | 想用 SillyTavern 当前端、agent 当后端跑 RP 时 | AIRP 零改动即可当 agent 的 MCP 数据后端（agy 走 stdio/streamable-http 均可）。设计 + 安全姿态见 [deployment-tavern-agent.md](deployment-tavern-agent.md)。**不可信卡场景：agent 应 sandbox；AIRP 当前用隔离 data-dir + 路径沙箱（已有），只读/软删待 §2.D+§3 落地**（此用法强化其动机） |
 
 ---
@@ -185,7 +185,7 @@
 
 ## 6. 变更日志
 
-- **2026-06-29** 新增 [configuration.md](configuration.md)：列出可定制项 —— CLI（`mcp`/`serve` + `--data-dir`/`--bind`）、env（`AIRP_HTTP_TOKEN` / `AIRP_MAX_READ_BYTES` / `RUST_LOG`）、硬编点（`MAX_PNG_BYTES` / host 校验关 / CORS / 协议版本）、以及「RP 数据才是主定制面」。§0.5 加链。
+- **2026-06-29** 新增 [configuration.md](configuration.md)：列出可定制项 —— CLI（`mcp`/`serve` + `--data-dir`/`--bind`）、env（`AIRP_HTTP_TOKEN` / `AIRP_MAX_READ_BYTES` / `RUST_LOG`）、硬编点（PNG / host 校验关 / CORS / 协议版本）、以及「RP 数据才是主定制面」。§0.5 加链。
 
 - **2026-06-29** 全量读码审计 → 新增 §2.E「代码审计发现」5 条独立候选：E.1 list 排序不稳定（建议先做）/ E.2 `import_preset` 未走沙箱（建议先做）/ E.3 `constant_time_eq` 长度侧信道 / E.4 错误码全归 `INTERNAL_ERROR` / E.5 `.parent().unwrap()` 风格不一致（可选）。各条均标实证位置 + 入口 + 退出标准。§3 已列的「入口尺寸 cap / 只读模式 / 优雅关停」不重复收录。HEAD 更新至 `3d4bded`。
 

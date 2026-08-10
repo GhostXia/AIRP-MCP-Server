@@ -45,12 +45,33 @@ pub(crate) fn max_read_bytes() -> usize {
 /// Char-boundary safe: never splits a multi-byte UTF-8 sequence.
 ///
 /// Resources do NOT support offset-based paging — the `[PARTIAL]` marker
-/// directs callers to structured-access tools (`decompose_character` /
-/// `decompose_preset`) instead.
+/// directs callers to the resource-specific structured/paged tool.
 pub(crate) fn truncate_for_context(content: &str) -> String {
     truncate_with_notice(
         content,
-        "content exceeds single-read cap; use decompose_character / decompose_preset for structured access",
+        "content exceeds single-read cap; use the resource-specific structured or paged tool",
+    )
+}
+
+/// Truncate a bounded prefix whose source length is known from metadata.
+/// Unlike `truncate_for_context`, this helper is used after a prefix read so
+/// callers never need to load the complete file merely to discover that it is
+/// over the context cap.
+pub(crate) fn truncate_prefix_for_context(content: &str, total_bytes: u64) -> String {
+    let max_len = max_read_bytes();
+    if total_bytes <= max_len as u64 && content.len() <= max_len {
+        return content.to_string();
+    }
+
+    let mut end = content.len().min(max_len);
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "[PARTIAL: total={}, limit={} — content exceeds single-read cap; use the resource-specific structured or paged tool]\n{}",
+        total_bytes.max(content.len() as u64),
+        end,
+        &content[..end]
     )
 }
 
@@ -180,13 +201,11 @@ impl ServerHandler for AirpMcpServer {
             decide informed by the cost of NOT considering them:\n\
             1. Immersive RP prose quality -> consider export_context_bundle and \
             writing in an ISOLATED subagent, not the orchestrator context. Why: \
-            the orchestrator's coding-assistant context flattens prose. Cost if \
-            skipped: even a correctly injected preset reads stiff/out-of-character.\n\
-            2. User dislikes the writing style -> consider tune_preset to fix the \
-            SOURCE preset, not regeneration or output post-processing. Why: the \
-            style already transferred; the problem is preset content. Cost if \
-            skipped: you only launder the output (treats the symptom) and waste \
-            tokens.\n\
+            the orchestrator's coding-assistant context flattens prose.\n\
+            2. User dislikes the writing style -> inspect the SOURCE preset with \
+            read_preset_structure, then make the smallest source edit. AIRP keeps \
+            SillyTavern prompts opaque and does not promise automatic style \
+            injection; the Agent chooses how to apply raw fields.\n\
             3. Bulk reads / long sessions -> prefer scoped, paged reads (small \
             get_recent_context n; keyword apply_lorebook over full dumps) and \
             seal_volume to archive+clear long sessions. Why: AIRP data can be \
@@ -240,6 +259,8 @@ impl ServerHandler for AirpMcpServer {
             "seal_volume" => self.handle_seal_volume(args).await,
             "list_presets" => self.handle_list_presets().await,
             "get_preset" => self.handle_get_preset(args).await,
+            "read_preset_raw" => self.handle_read_preset_raw(args).await,
+            "read_preset_structure" => self.handle_read_preset_structure(args).await,
             "decompose_character" => self.handle_decompose_character(args).await,
             "decompose_preset" => self.handle_decompose_preset(args).await,
             "rollback_messages" => self.handle_rollback_messages(args).await,
@@ -589,6 +610,8 @@ fn all_tools() -> Vec<Tool> {
         seal_volume_tool(),
         list_presets_tool(),
         get_preset_tool(),
+        read_preset_raw_tool(),
+        read_preset_structure_tool(),
         decompose_character_tool(),
         decompose_preset_tool(),
         rollback_messages_tool(),
@@ -618,13 +641,13 @@ fn all_tools() -> Vec<Tool> {
 fn import_card_tool() -> Tool {
     Tool::new(
         "import_card",
-        "Import a character card from a PNG. Supports both V2 (chara chunk) and V3 (ccv3 chunk) character cards; V3 character_book lorebook entries are extracted automatically. Provide exactly one of: png_path (RECOMMENDED — server reads the file directly, so the base64 never enters the model context and cannot burn tokens; no size cap) or png_base64 (capped at 10 MiB).",
+        "Import a character card from a PNG. Supports both V2 (chara chunk) and V3 (ccv3 chunk) character cards; V3 character_book lorebook entries are extracted automatically. Provide exactly one of: png_path (RECOMMENDED — server reads the file directly, so the base64 never enters the model context and cannot burn tokens; capped at 256 MiB) or png_base64 (capped at 10 MiB).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
                 "png_path": {
                     "type": "string",
-                    "description": "Filesystem path to the PNG. Preferred: AIRP reads + decodes it server-side (no base64 in context, no size limit). Read server-side — keep the HTTP transport on a trusted LAN."
+                    "description": "Filesystem path to the PNG. Preferred: AIRP reads + decodes it server-side (no base64 in context; capped at 256 MiB). Read server-side — keep the HTTP transport on a trusted LAN."
                 },
                 "png_base64": {
                     "type": "string",
@@ -783,7 +806,7 @@ fn get_recent_context_tool() -> Tool {
 fn import_preset_tool() -> Tool {
     Tool::new(
         "import_preset",
-        "Import a SillyTavern preset JSON. Writes to presets/{preset_id}/preset.json. Provide exactly one of: preset_path (RECOMMENDED — server reads the file directly, so the preset content never enters the model context and bypasses JSON-RPC request-body size limits; no size cap) or preset_json (capped at 64 MiB).",
+        "Import a SillyTavern preset JSON. Writes to presets/{preset_id}/preset.json. Provide exactly one of: preset_path (RECOMMENDED — server reads the file directly, so the preset content never enters the model context and bypasses JSON-RPC request-body limits; capped at 32 MiB) or preset_json (capped at 16 MiB).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
@@ -793,11 +816,11 @@ fn import_preset_tool() -> Tool {
                 },
                 "preset_json": {
                     "type": "string",
-                    "description": "Full SillyTavern preset JSON content. Use only when the file is not reachable by path; large presets sent through JSON-RPC may hit client-side request-body caps."
+                    "description": "SillyTavern source JSON content. Use only when the file is not reachable by path; large presets sent through JSON-RPC may hit client-side request-body caps."
                 },
                 "preset_path": {
                     "type": "string",
-                    "description": "Filesystem path to the preset JSON file. Preferred: AIRP reads it server-side (no content in model context, no request-body limit)."
+                    "description": "Filesystem path to the preset JSON file (≤ 32 MiB). Preferred: AIRP reads it server-side, keeping content out of model context and avoiding JSON-RPC request-body limits."
                 }
             },
             "required": ["preset_id"]
@@ -989,14 +1012,14 @@ fn merge_lorebooks_tool() -> Tool {
 fn build_scene_system_prompt_tool() -> Tool {
     Tool::new(
         "build_scene_system_prompt",
-        "Auto-assemble a multi-character system prompt from scene config (pure template assembly, no AI)",
+        "Auto-assemble a multi-character system prompt from scene config (pure template assembly, no AI; SillyTavern prompts remain raw)",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
                 "scene_id": { "type": "string", "description": "Scene ID" },
                 "user_name": { "type": "string", "description": "Name for the user/player character", "default": "User" },
-                "preset_id": { "type": "string", "description": "Optional preset ID for style injection" },
-                "style_enhance": { "type": "boolean", "description": "Opt-in style enhancement (default false): inject per-character dialogue examples + preset suffix as voice anchors. Enhancement only — grows the prompt and may improve style fidelity, but does NOT guarantee the final output style.", "default": false }
+                "preset_id": { "type": "string", "description": "Optional legacy AIRP preset ID; SillyTavern prompts/prompt_order remain opaque" },
+                "style_enhance": { "type": "boolean", "description": "Opt-in character dialogue examples (default false). Does not apply SillyTavern prompts or prompt_order.", "default": false }
             },
             "required": ["scene_id"]
         })),
@@ -1011,7 +1034,7 @@ fn export_context_bundle_tool() -> Tool {
             "type": "object",
             "properties": {
                 "character_id": { "type": "string", "description": "Character ID to export" },
-                "preset_id": { "type": "string", "description": "Optional preset; prefix/suffix assembled into prose, full preset → preset_raw.json sidecar" },
+                "preset_id": { "type": "string", "description": "Optional preset; legacy AIRP config anchors may be assembled, while the raw source is always written to preset_raw.json for Agent-directed application" },
                 "include_lorebook": { "type": "boolean", "description": "Append all enabled lorebook entries into context.md (default false; grows the bundle)", "default": false },
                 "thinking_mode_text": { "type": "string", "description": "Optional verbatim thinking-mode directive placed first in context.md (e.g. control reasoning shape: immersive in-character monologue vs pure analysis). Passthrough — caller-supplied, model-specific content; AIRP does not author or interpret it." },
                 "out_dir": { "type": "string", "description": "Output base dir; bundle written to {out_dir}/{character_id}/ (default ./exports)", "default": "./exports" }
@@ -1184,7 +1207,7 @@ fn apply_lorebook_tool() -> Tool {
 fn update_lorebook_tool() -> Tool {
     Tool::new(
         "update_lorebook",
-        "Update lorebook entries for a character. Provide exactly one of: lorebook_path (RECOMMENDED — server reads the file directly, so the lorebook content never enters the model context and bypasses JSON-RPC request-body size limits; no size cap; accepts SillyTavern world book JSON with entries as array or object map) or entries (inline JSON array).",
+        "Update lorebook entries for a character. Provide exactly one of: lorebook_path (RECOMMENDED — server reads the file directly, so the lorebook content never enters the model context and bypasses JSON-RPC request-body size limits; capped at 256 MiB; accepts SillyTavern world book JSON with entries as array or object map) or entries (inline JSON array).",
         to_schema(serde_json::json!({
             "type": "object",
             "properties": {
@@ -1290,6 +1313,42 @@ fn get_preset_tool() -> Tool {
                     "type": "string",
                     "description": "Preset ID"
                 }
+            },
+            "required": ["preset_id"]
+        })),
+    )
+}
+
+fn read_preset_raw_tool() -> Tool {
+    Tool::new(
+        "read_preset_raw",
+        "Read an exact UTF-8-aligned page of the authoritative preset.json source. BOM bytes are preserved. Continue with next_offset and expected_revision; max_bytes cannot exceed AIRP_MAX_READ_BYTES.",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "preset_id": { "type": "string", "description": "Preset ID" },
+                "offset": { "type": "integer", "minimum": 0, "description": "Raw byte offset (default 0); must be a UTF-8 boundary", "default": 0 },
+                "max_bytes": { "type": "integer", "minimum": 1, "description": "Maximum encoded response bytes, including JSON metadata and escaping (default AIRP_MAX_READ_BYTES; cannot exceed it)" },
+                "expected_revision": { "type": "string", "description": "Revision returned by a prior page; replacement is rejected" }
+            },
+            "required": ["preset_id"]
+        })),
+    )
+}
+
+fn read_preset_structure_tool() -> Tool {
+    Tool::new(
+        "read_preset_structure",
+        "Read a lossless typed page from any RFC6901 pointer in the raw preset JSON. Arrays keep source indexes/order, object keys are deterministic, and large nested values can be fetched recursively by child pointer.",
+        to_schema(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "preset_id": { "type": "string", "description": "Preset ID" },
+                "pointer": { "type": "string", "description": "RFC6901 JSON pointer (empty string selects root)", "default": "" },
+                "offset": { "type": "integer", "minimum": 0, "description": "Array/object item offset; for strings, UTF-8 byte offset", "default": 0 },
+                "limit": { "type": "integer", "minimum": 1, "description": "Maximum items (or string bytes) in this page", "default": 100 },
+                "max_bytes": { "type": "integer", "minimum": 1, "description": "Maximum encoded response bytes; cannot exceed AIRP_MAX_READ_BYTES" },
+                "expected_revision": { "type": "string", "description": "Revision returned by a prior page; replacement is rejected" }
             },
             "required": ["preset_id"]
         })),
@@ -1430,7 +1489,7 @@ mod tests {
         let tools = all_tools();
         assert_eq!(
             tools.len(),
-            38,
+            40,
             "registry size drifted; update the transport-level counts too"
         );
 

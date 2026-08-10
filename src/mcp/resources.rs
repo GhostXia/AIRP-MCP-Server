@@ -4,6 +4,7 @@ use super::AirpMcpServer;
 use crate::error::Result;
 use crate::models::*;
 use crate::storage::*;
+use tokio::io::AsyncReadExt;
 
 impl AirpMcpServer {
     pub async fn dispatch_resource(&self, uri: &str) -> Result<String> {
@@ -383,12 +384,43 @@ impl AirpMcpServer {
             ));
         }
 
-        let raw = tokio::fs::read_to_string(&path).await?;
-        let cleaned = crate::storage::strip_utf8_bom(&raw);
+        let total_bytes = tokio::fs::metadata(&path).await?.len();
+        let max_len = crate::mcp::max_read_bytes();
+        // Read only a bounded prefix.  The extra four bytes let us discard a
+        // UTF-8 code point that happens to straddle the prefix boundary
+        // without ever reading the rest of a large preset into memory.
+        let read_limit = u64::try_from(max_len).unwrap_or(u64::MAX).saturating_add(4);
+        let file = tokio::fs::File::open(&path).await?;
+        let mut bytes = Vec::new();
+        file.take(read_limit).read_to_end(&mut bytes).await?;
+        let truncated_read = (bytes.len() as u64) < total_bytes;
+
+        let json_bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+        let text = match std::str::from_utf8(json_bytes) {
+            Ok(text) => text,
+            Err(err) if truncated_read && err.error_len().is_none() => {
+                // Only an incomplete trailing code point is expected when a
+                // valid UTF-8 file is cut at the bounded read boundary.
+                std::str::from_utf8(&json_bytes[..err.valid_up_to()]).map_err(|_| {
+                    crate::error::AirpError::Validation(
+                        "preset raw prefix is not valid UTF-8".into(),
+                    )
+                })?
+            }
+            Err(_) => {
+                return Err(crate::error::AirpError::Validation(
+                    "preset raw content is not valid UTF-8".into(),
+                ));
+            }
+        };
+        let cleaned = crate::storage::strip_utf8_bom(text);
         // Cap content returned into the model context. Mirrors plugin blob
         // reads: truncate oversized files with a [PARTIAL: ...] marker instead
         // of dumping the whole preset and burning the token budget.
-        Ok(crate::mcp::truncate_for_context(cleaned))
+        Ok(crate::mcp::truncate_prefix_for_context(
+            cleaned,
+            total_bytes,
+        ))
     }
 
     async fn read_preset_artifacts(&self, preset_id: &str) -> Result<String> {
