@@ -275,7 +275,7 @@ mod tests {
     /// Unlike the status+header checks above, this asserts the actual JSON-RPC
     /// payloads, so it fails if rmcp returns 200 with an error frame.
     #[tokio::test]
-    async fn full_handshake_lists_all_38_tools() {
+    async fn full_handshake_lists_all_40_tools() {
         let (app, _dir) = test_app(None).await;
 
         // 1. initialize -> decode the result, not just the status line.
@@ -332,7 +332,7 @@ mod tests {
         let tools = listed["result"]["tools"]
             .as_array()
             .expect("tools/list must return a tools array");
-        assert_eq!(tools.len(), 38, "expected all 38 tools over HTTP");
+        assert_eq!(tools.len(), 40, "expected all 40 tools over HTTP");
         assert!(
             tools.iter().any(|t| t["name"] == "list_characters"),
             "registry must include list_characters"

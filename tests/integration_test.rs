@@ -696,6 +696,137 @@ async fn test_import_v3_character_card() {
 }
 
 #[tokio::test]
+async fn test_import_post_idat_character_metadata() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+
+    let mut text_card = common::create_test_card();
+    text_card["name"] = Value::String("PostIdatText".to_string());
+    server
+        .handle_import_card(serde_json::json!({
+            "png_base64": common::post_idat_text_card_to_base64(&text_card)
+        }))
+        .await
+        .expect("post-IDAT tEXt card should import");
+
+    let mut ztxt_card = common::create_test_card();
+    ztxt_card["name"] = Value::String("PostIdatZtxt".to_string());
+    server
+        .handle_import_card(serde_json::json!({
+            "png_base64": common::post_idat_ztxt_card_to_base64(&ztxt_card)
+        }))
+        .await
+        .expect("post-IDAT zTXt card should import");
+
+    let text_result = server
+        .handle_get_character(serde_json::json!({"character_id": "postidattext"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&text_result).unwrap()["card"]["name"],
+        "PostIdatText"
+    );
+
+    let ztxt_result = server
+        .handle_get_character(serde_json::json!({"character_id": "postidatztxt"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&ztxt_result).unwrap()["card"]["name"],
+        "PostIdatZtxt"
+    );
+}
+
+#[tokio::test]
+async fn test_ccv3_takes_precedence_over_chara() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+
+    let ccv3 = common::create_test_v3_card();
+    let mut chara = common::create_test_card();
+    chara["name"] = Value::String("CharaFallback".to_string());
+
+    server
+        .handle_import_card(serde_json::json!({
+            "png_base64": common::post_idat_dual_card_to_base64(&ccv3, &chara)
+        }))
+        .await
+        .expect("dual card should import");
+
+    let result = server
+        .handle_get_character(serde_json::json!({"character_id": "v3testcharacter"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&result).unwrap()["card"]["name"],
+        "V3TestCharacter"
+    );
+
+    let fallback = server
+        .handle_get_character(serde_json::json!({"character_id": "charafallback"}))
+        .await;
+    assert!(fallback.is_err(), "chara must not win over ccv3");
+}
+
+#[tokio::test]
+async fn test_oversized_ztxt_is_rejected_before_decode() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+
+    let err = server
+        .handle_import_card(serde_json::json!({
+            "png_base64": common::oversized_ztxt_card_to_base64()
+        }))
+        .await
+        .expect_err("high-ratio zTXt must be rejected");
+    let message = err.to_string();
+    assert!(
+        message.contains("decompressed limit"),
+        "unexpected error for oversized zTXt: {message}"
+    );
+}
+
+#[tokio::test]
+async fn test_post_idat_metadata_with_bad_crc_is_rejected() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let card = common::create_test_card();
+
+    for png_base64 in [
+        common::post_idat_text_card_with_bad_crc_to_base64(&card),
+        common::post_idat_ztxt_card_with_bad_crc_to_base64(&card),
+    ] {
+        let err = server
+            .handle_import_card(serde_json::json!({"png_base64": png_base64}))
+            .await
+            .expect_err("post-IDAT metadata with a bad CRC must be rejected");
+        assert!(
+            err.to_string().to_ascii_lowercase().contains("crc"),
+            "unexpected CRC error: {err}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_trailing_block_after_iend_is_rejected() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+
+    let err = server
+        .handle_import_card(serde_json::json!({
+            "png_base64": common::post_idat_card_with_trailing_block_to_base64(
+                &common::create_test_card()
+            )
+        }))
+        .await
+        .expect_err("trailing data after IEND must be rejected");
+    assert!(
+        err.to_string().contains("Trailing data after IEND"),
+        "unexpected trailing-data error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn test_lorebook_sillytavern_native_field_names() {
     // CodeRabbit audit: verify that SillyTavern's native field names
     // (key, keysecondary, disable, order, caseSensitive) deserialize
@@ -774,4 +905,573 @@ async fn test_lorebook_sillytavern_native_field_names() {
         !no_match_result.contains("Dragon"),
         "Non-matching text should not include keyword-gated entry"
     );
+}
+
+#[tokio::test]
+async fn test_preset_raw_bytes_and_legacy_roundtrip() {
+    let ctx = common::TestContext::new().await;
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("raw-roundtrip").unwrap();
+
+    // Keep formatting, BOM, and unknown fields exactly as supplied. The
+    // parser provides only the compact AIRP view; it must not rewrite source
+    // JSON on import.
+    let raw = b"\xEF\xBB\xBF{\n  \"name\": \"Raw source\",\n  \"config\": {\"temperature\": 0.8},\n  \"prompts\": [\"untouched\"],\n  \"unknown\": {\"keep\": true}\n}\n";
+    store.save_raw(&id, raw).await.unwrap();
+    assert_eq!(
+        std::fs::read(ctx.storage.preset_json_path(id.as_ref())).unwrap(),
+        raw,
+        "raw preset bytes must survive import unchanged"
+    );
+    assert_eq!(store.get(&id).await.unwrap().name, "Raw source");
+
+    let st_id = airp_mcp_server::models::PresetId::new("st-prompt-order").unwrap();
+    let st_raw = br#"{"name":"ST source","system_prompt_prefix":"prefix","system_prompt_suffix":"suffix","prompts":[{"identifier":"system","content":"raw prompt"}],"prompt_order":[[{"identifier":"system","enabled":true}]]}"#;
+    store.save_raw(&st_id, st_raw).await.unwrap();
+    let st = store.get(&st_id).await.unwrap();
+    assert_eq!(
+        std::fs::read(ctx.storage.preset_json_path(st_id.as_ref())).unwrap(),
+        st_raw,
+        "prompt_order and prompts must remain in the raw source"
+    );
+    assert_eq!(
+        st.build_system_prompt("character"),
+        "character",
+        "SillyTavern prompts and prompt_order must stay opaque to AIRP"
+    );
+
+    let legacy = airp_mcp_server::models::Preset {
+        id: airp_mcp_server::models::PresetId::new("legacy-save").unwrap(),
+        name: "Legacy Save".to_string(),
+        config: airp_mcp_server::models::PresetConfig {
+            system_prompt_prefix: "prefix".to_string(),
+            system_prompt_suffix: "suffix".to_string(),
+            temperature: 0.75,
+            ..Default::default()
+        },
+    };
+    store.save(&legacy).await.unwrap();
+    let loaded = store.get(&legacy.id).await.unwrap();
+    assert_eq!(loaded.id.as_ref(), legacy.id.as_ref());
+    assert_eq!(loaded.name, legacy.name);
+    assert_eq!(loaded.config.system_prompt_prefix, "prefix");
+    assert_eq!(loaded.config.system_prompt_suffix, "suffix");
+    assert!((loaded.config.temperature - 0.75).abs() < f32::EPSILON);
+    assert_eq!(
+        loaded.build_system_prompt("character"),
+        "prefix\n\ncharacter\n\nsuffix",
+        "legacy AIRP config anchors remain supported"
+    );
+}
+
+#[tokio::test]
+async fn test_preset_validation_and_failed_write_preserves_old_file() {
+    let ctx = common::TestContext::new().await;
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("validation").unwrap();
+    let old = br#"{"name":"old","config":{"temperature":0.7}}"#;
+    store.save_raw(&id, old).await.unwrap();
+
+    for invalid in [
+        br#"{"name":"missing schema"}"#.as_slice(),
+        br#"{"name":"bad number","config":{"temperature":"hot"}}"#.as_slice(),
+        br#"[]"#.as_slice(),
+    ] {
+        assert!(
+            store.save_raw(&id, invalid).await.is_err(),
+            "invalid preset input must be rejected"
+        );
+        assert_eq!(
+            std::fs::read(ctx.storage.preset_json_path(id.as_ref())).unwrap(),
+            old,
+            "failed validation must not replace an existing preset"
+        );
+    }
+
+    for invalid_id in ["", ".hidden", "trailing.", "a..b", "a/b", "a\\b", "a:b"] {
+        assert!(
+            airp_mcp_server::models::PresetId::new(invalid_id).is_err(),
+            "invalid preset ID should be rejected: {invalid_id:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_preset_list_skips_invalid_and_accepts_flat_migration() {
+    let ctx = common::TestContext::new().await;
+    let presets_dir = ctx.data_dir.join("presets");
+    let flat_path = presets_dir.join("flat-preset.json");
+    let flat_raw = br#"{"name":"Flat preset","config":{}}"#;
+    std::fs::write(&flat_path, flat_raw).unwrap();
+    std::fs::write(presets_dir.join("broken.json"), b"not json").unwrap();
+
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let list = store.list().await.unwrap();
+    assert!(
+        list.iter()
+            .any(|preset| preset.id.as_ref() == "flat-preset")
+    );
+    assert!(!list.iter().any(|preset| preset.id.as_ref() == "broken"));
+
+    ctx.storage.migrate_legacy_presets().await.unwrap();
+    assert!(!flat_path.exists());
+    assert!(presets_dir.join("flat-preset").join("preset.json").exists());
+}
+
+#[tokio::test]
+async fn test_unicode_preset_id_roundtrip_without_normalization() {
+    let ctx = common::TestContext::new().await;
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let composed = airp_mcp_server::models::PresetId::new("角色.預設_1").unwrap();
+    let other_unicode = airp_mcp_server::models::PresetId::new("é").unwrap();
+    assert_ne!(composed.as_ref(), other_unicode.as_ref());
+
+    let raw = br#"{"name":"Unicode preset","config":{}}"#;
+    store.save_raw(&composed, raw).await.unwrap();
+    assert_eq!(store.get(&composed).await.unwrap().name, "Unicode preset");
+    assert!(
+        store
+            .list()
+            .await
+            .unwrap()
+            .iter()
+            .any(|preset| preset.id == composed)
+    );
+    store.delete(&composed).await.unwrap();
+    assert!(store.get(&composed).await.is_err());
+
+    for invalid in [
+        "a b",
+        "a/b",
+        "a\\b",
+        ".hidden",
+        "trailing.",
+        "a..b",
+        "\u{0}",
+    ] {
+        assert!(airp_mcp_server::models::PresetId::new(invalid).is_err());
+    }
+}
+
+#[tokio::test]
+async fn test_preset_collision_prefers_canonical_and_delete_removes_both() {
+    let ctx = common::TestContext::new().await;
+    let presets_dir = ctx.data_dir.join("presets");
+    let canonical_dir = presets_dir.join("collision");
+    let canonical_path = canonical_dir.join("preset.json");
+    let flat_path = presets_dir.join("collision.json");
+    std::fs::create_dir_all(&canonical_dir).unwrap();
+    std::fs::write(&canonical_path, br#"{"name":"Canonical","config":{}}"#).unwrap();
+    std::fs::write(&flat_path, br#"{"name":"Legacy","config":{}}"#).unwrap();
+
+    ctx.storage.migrate_legacy_presets().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&canonical_path).unwrap(),
+        r#"{"name":"Canonical","config":{}}"#
+    );
+    assert!(
+        flat_path.exists(),
+        "migration collision must not overwrite data"
+    );
+
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let listed: Vec<_> = store
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|preset| preset.id.as_ref() == "collision")
+        .collect();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "Canonical");
+
+    let id = airp_mcp_server::models::PresetId::new("collision").unwrap();
+    store.delete(&id).await.unwrap();
+    assert!(!canonical_dir.exists());
+    assert!(!flat_path.exists());
+    assert!(store.list().await.unwrap().is_empty());
+
+    let artifact_only_dir = presets_dir.join("legacy-visible");
+    std::fs::create_dir_all(&artifact_only_dir).unwrap();
+    std::fs::write(artifact_only_dir.join("notes.md"), "artifact").unwrap();
+    std::fs::write(
+        presets_dir.join("legacy-visible.json"),
+        br#"{"name":"Visible legacy","config":{}}"#,
+    )
+    .unwrap();
+    let visible = store.list().await.unwrap();
+    assert_eq!(
+        visible
+            .iter()
+            .find(|preset| preset.id.as_ref() == "legacy-visible")
+            .unwrap()
+            .name,
+        "Visible legacy"
+    );
+}
+
+#[tokio::test]
+async fn test_preset_artifact_cannot_overwrite_authoritative_source() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("artifact-guard").unwrap();
+    let raw = br#"{"name":"Authoritative","config":{}}"#;
+    store.save_raw(&id, raw).await.unwrap();
+    let path = ctx.storage.preset_json_path(id.as_ref());
+    let revision = airp_mcp_server::storage::preset_store::raw_revision_for_path(&path)
+        .await
+        .unwrap();
+
+    for artifact_path in [
+        "preset.json",
+        "PRESET.JSON",
+        "notes/../preset.json",
+        "preset.json.",
+        "preset.json ",
+        "preset.json::$DATA",
+        ".preset.json.tmp-123-4",
+        ".preset.json.tmp-123-4.",
+        ".PRESET.JSON.TMP-123-4",
+    ] {
+        let error = server
+            .handle_write_preset_artifact(serde_json::json!({
+                "preset_id": id.as_ref(),
+                "artifact_path": artifact_path,
+                "content": "corrupt"
+            }))
+            .await
+            .expect_err("reserved artifact path must be rejected");
+        assert!(error.to_string().contains("reserved"));
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
+        assert_eq!(
+            airp_mcp_server::storage::preset_store::raw_revision_for_path(&path)
+                .await
+                .unwrap(),
+            revision
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_preset_decompose_uses_one_raw_snapshot() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("snapshot").unwrap();
+    let raw = br#"{"name":"Snapshot A","config":{"system_prompt_prefix":"from-a"},"unknown":{"version":"a"}}"#;
+    store.save_raw(&id, raw).await.unwrap();
+
+    let target = ctx.data_dir.join("snapshot-output");
+    let result = server
+        .handle_decompose_preset(serde_json::json!({
+            "preset_id": id.as_ref(),
+            "target_dir": target.to_string_lossy()
+        }))
+        .await
+        .unwrap();
+    assert!(result.contains("Snapshot A"));
+    let output_dir = target.join("presets").join(id.as_ref());
+    assert_eq!(
+        std::fs::read(output_dir.join("preset_raw.json")).unwrap(),
+        raw
+    );
+    assert!(
+        std::fs::read_to_string(output_dir.join("system_prompt.md"))
+            .unwrap()
+            .contains("from-a")
+    );
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(output_dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["preset_id"], id.as_ref());
+    assert!(
+        manifest["top_level_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|key| key == "unknown")
+    );
+}
+
+#[tokio::test]
+async fn test_preset_revision_changes_for_same_length_replacement() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("revision-content").unwrap();
+    let first = br#"{"name":"AAAA","config":{}}"#;
+    let second = br#"{"name":"BBBB","config":{}}"#;
+    assert_eq!(first.len(), second.len());
+    store.save_raw(&id, first).await.unwrap();
+    let page: Value = serde_json::from_str(
+        &server
+            .handle_read_preset_raw(serde_json::json!({
+                "preset_id": id.as_ref(), "max_bytes": 1024
+            }))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let old_revision = page["revision"].as_str().unwrap();
+    store.save_raw(&id, second).await.unwrap();
+    let error = server
+        .handle_read_preset_raw(serde_json::json!({
+            "preset_id": id.as_ref(),
+            "max_bytes": 1024,
+            "expected_revision": old_revision
+        }))
+        .await
+        .expect_err("same-length replacement must invalidate revision");
+    assert!(error.to_string().contains("revision changed"));
+}
+
+#[tokio::test]
+async fn test_sillytavern_regex_disabled_defaults_to_enabled() {
+    let ctx = common::TestContext::new().await;
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("regex-disabled").unwrap();
+    let raw = br#"{"name":"Regex","prompts":[],"prompt_order":[],"extensions":{"RegexBinding":{"regexes":[{"id":"missing","scriptName":"Missing","findRegex":"a","replaceString":"b"},{"id":"off","scriptName":"Off","findRegex":"a","replaceString":"b","disabled":true},{"id":"on","scriptName":"On","findRegex":"a","replaceString":"b","disabled":false},{"id":"bad","scriptName":"Bad","findRegex":"a","replaceString":"b","disabled":"no"}]}}}"#;
+    store.save_raw(&id, raw).await.unwrap();
+    let scripts = store.get(&id).await.unwrap().config.regex_scripts;
+    assert_eq!(scripts.len(), 3);
+    assert!(
+        scripts
+            .iter()
+            .any(|script| script.id == "missing" && script.enabled)
+    );
+    assert!(
+        scripts
+            .iter()
+            .any(|script| script.id == "on" && script.enabled)
+    );
+    assert!(
+        scripts
+            .iter()
+            .any(|script| script.id == "off" && !script.enabled)
+    );
+}
+
+#[tokio::test]
+async fn test_png_base64_limit_is_checked_before_decode_allocation() {
+    use base64::Engine;
+
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let cap = 10 * 1024 * 1024;
+
+    let at_limit = base64::engine::general_purpose::STANDARD.encode(vec![0_u8; cap]);
+    let at_limit_error = server
+        .handle_import_card(serde_json::json!({"png_base64": at_limit}))
+        .await
+        .expect_err("zero bytes are not a PNG");
+    assert!(!at_limit_error.to_string().contains("PNG too large"));
+
+    let over_limit = base64::engine::general_purpose::STANDARD.encode(vec![0_u8; cap + 1]);
+    let over_limit_error = server
+        .handle_import_card(serde_json::json!({"png_base64": over_limit}))
+        .await
+        .expect_err("decoded content over the cap must be rejected");
+    assert!(over_limit_error.to_string().contains("PNG too large"));
+}
+
+#[tokio::test]
+async fn test_preset_decompose_accepts_dot_id() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("lunareclipse_2.0.1").unwrap();
+    store
+        .save(&airp_mcp_server::models::Preset {
+            id: id.clone(),
+            name: "Dot ID".to_string(),
+            config: Default::default(),
+        })
+        .await
+        .unwrap();
+
+    let target = ctx.data_dir.join("decomposed");
+    server
+        .handle_decompose_preset(serde_json::json!({
+            "preset_id": id.as_ref(),
+            "target_dir": target.to_string_lossy()
+        }))
+        .await
+        .unwrap();
+    assert!(
+        target
+            .join("presets")
+            .join(id.as_ref())
+            .join("system_prompt.md")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn test_preset_path_rejects_oversized_file_from_metadata() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let path = ctx.data_dir.join("oversized-preset.json");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(32 * 1024 * 1024 + 1).unwrap();
+
+    let err = server
+        .handle_import_preset(serde_json::json!({
+            "preset_id": "oversized",
+            "preset_path": path.to_string_lossy()
+        }))
+        .await
+        .expect_err("preset_path over the safety limit must be rejected");
+    assert!(err.to_string().contains("too large"));
+}
+
+#[tokio::test]
+async fn test_preset_raw_resource_reads_bounded_prefix() {
+    let ctx = common::TestContext::new().await;
+    let path = ctx
+        .data_dir
+        .join("presets")
+        .join("resource-large")
+        .join("preset.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut raw = br#"{"name":"Resource","config":{}}"#.to_vec();
+    raw.extend(std::iter::repeat_n(b' ', 64 * 1024));
+    std::fs::write(&path, raw).unwrap();
+
+    let result = ctx
+        .server()
+        .dispatch_resource("airp://presets/resource-large/raw")
+        .await
+        .unwrap();
+    assert!(result.starts_with("[PARTIAL:"));
+    assert!(result.contains("total="));
+}
+
+#[tokio::test]
+async fn test_preset_raw_pages_and_structured_reconstruction() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("paged").unwrap();
+    let raw = format!(
+        "\u{feff}{{\"prompts\":[{{\"identifier\":\"system\",\"content\":\"猫咪\"}}],\"prompt_order\":[[{{\"identifier\":\"system\",\"enabled\":true}}]],\"unknown\":{{\"nested\":{{\"flag\":true}},\"array\":[1,\"猫\"]}},\"padding\":\"{}\"}}",
+        "x".repeat(512)
+    )
+    .into_bytes();
+    store.save_raw(&id, &raw).await.unwrap();
+
+    let mut offset = 0_u64;
+    let mut revision: Option<String> = None;
+    let mut rebuilt = Vec::new();
+    loop {
+        let mut args = serde_json::json!({
+            "preset_id": id.as_ref(),
+            "offset": offset,
+            "max_bytes": 256
+        });
+        if let Some(value) = &revision {
+            args["expected_revision"] = Value::String(value.clone());
+        }
+        let encoded_page = server.handle_read_preset_raw(args).await.unwrap();
+        assert!(
+            encoded_page.len() <= 256,
+            "encoded page exceeds requested budget"
+        );
+        let page: Value = serde_json::from_str(&encoded_page).unwrap();
+        assert!(page["content"].as_str().unwrap().len() <= 256);
+        revision = Some(page["revision"].as_str().unwrap().to_string());
+        rebuilt.extend_from_slice(page["content"].as_str().unwrap().as_bytes());
+        if !page["has_more"].as_bool().unwrap() {
+            assert_eq!(page["next_offset"], page["total_bytes"]);
+            break;
+        }
+        offset = page["next_offset"].as_u64().unwrap();
+    }
+    assert_eq!(
+        rebuilt, raw,
+        "raw pages must reconstruct exact BOM/UTF-8 bytes"
+    );
+
+    assert!(
+        server
+            .handle_read_preset_raw(serde_json::json!({
+                "preset_id": id.as_ref(), "offset": 1, "max_bytes": 256
+            }))
+            .await
+            .is_err()
+    );
+    assert!(
+        server
+            .handle_read_preset_raw(serde_json::json!({
+                "preset_id": id.as_ref(), "offset": u64::MAX, "max_bytes": 256
+            }))
+            .await
+            .is_err()
+    );
+
+    let root: Value = serde_json::from_str(
+        &server
+            .handle_read_preset_structure(serde_json::json!({
+                "preset_id": id.as_ref(), "pointer": "", "offset": 0, "limit": 20, "max_bytes": 2048
+            }))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let root_items = root["items"].as_array().unwrap();
+    assert!(
+        root_items
+            .iter()
+            .any(|item| item["key"] == "prompts" && item["type"] == "array")
+    );
+    assert!(root_items.iter().any(|item| item["key"] == "prompt_order"));
+    assert!(root_items.iter().any(|item| item["key"] == "unknown"));
+
+    let prompts: Value = serde_json::from_str(
+        &server
+            .handle_read_preset_structure(serde_json::json!({
+                "preset_id": id.as_ref(), "pointer": "/prompts", "limit": 10, "max_bytes": 2048,
+                "expected_revision": revision.clone().unwrap()
+            }))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(prompts["items"][0]["index"], 0);
+    assert_eq!(prompts["items"][0]["value"]["identifier"], "system");
+
+    let nested: Value = serde_json::from_str(
+        &server
+            .handle_read_preset_structure(serde_json::json!({
+                "preset_id": id.as_ref(), "pointer": "/unknown/nested", "limit": 10, "max_bytes": 1024,
+                "expected_revision": revision.unwrap()
+            }))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(nested["items"][0]["key"], "flag");
+    assert_eq!(nested["items"][0]["type"], "boolean");
+    assert!(nested.to_string().len() <= 1024);
+}
+
+#[tokio::test]
+async fn test_preset_raw_eof_rejects_incomplete_utf8() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let id = "incomplete-utf8";
+    let path = ctx.storage.preset_json_path(id);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut raw = br#"{"name":"broken","config":{},"tail":""#.to_vec();
+    raw.extend_from_slice(&[0xE7, 0x8C]);
+    std::fs::write(&path, &raw).unwrap();
+
+    let error = server
+        .handle_read_preset_raw(serde_json::json!({
+            "preset_id": id,
+            "offset": raw.len(),
+            "max_bytes": 256
+        }))
+        .await
+        .expect_err("EOF after an incomplete UTF-8 code point must be rejected");
+    assert!(error.to_string().contains("UTF-8 boundary"));
 }

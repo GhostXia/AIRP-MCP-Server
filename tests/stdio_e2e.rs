@@ -155,7 +155,7 @@ async fn stdio_handshake_then_tool_call_returns_real_data() {
     let tools = listed["result"]["tools"]
         .as_array()
         .unwrap_or_else(|| panic!("tools/list must return a tools array: {listed}"));
-    assert_eq!(tools.len(), 38, "expected all 38 tools over stdio");
+    assert_eq!(tools.len(), 40, "expected all 40 tools over stdio");
     for t in tools {
         assert_eq!(
             t["inputSchema"]["type"].as_str(),

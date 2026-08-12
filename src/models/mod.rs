@@ -85,14 +85,23 @@ pub struct PresetId(pub String);
 impl PresetId {
     pub fn new(id: impl Into<String>) -> crate::error::Result<Self> {
         let id = id.into();
-        if id
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        {
+        // Preserve the Unicode alphanumeric IDs accepted by earlier releases.
+        // Do not normalize them: distinct existing directory names must remain
+        // distinct. Dots are allowed internally, but path-significant forms
+        // and all whitespace/control characters remain rejected.
+        let valid = !id.is_empty()
+            && !id.starts_with('.')
+            && !id.ends_with('.')
+            && !id.contains("..")
+            && id
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
+
+        if valid {
             Ok(Self(id))
         } else {
             Err(crate::error::AirpError::InvalidId(format!(
-                "Preset ID must be alphanumeric with hyphens/underscores: {}",
+                "Preset ID must use letters, digits, hyphens, underscores, and internal dots: {}",
                 id
             )))
         }

@@ -54,12 +54,12 @@
 ### ① 沉浸式 RP 文笔质量
 - **建议**：用 `export_context_bundle` 产出成品上下文，交给**隔离的 subagent** 书写；不要在编排主上下文里直接写。
 - **为何要先想**：主 Agent（你）的上下文塞满编程身份、工具 schema、harness 提醒；直接写 RP 时这层编程腔会压扁文笔。
-- **不先想的代价**：即使预设文风已成功注入，输出仍**僵硬、出戏**（"死人化"）。这是文笔质量问题，不是指令遵循问题——靠改提示词救不回来。
+- **不先想的代价**：即使 Agent 正确应用了预设原始字段，输出仍可能**僵硬、出戏**（"死人化"）。这是文笔质量问题，不是 AIRP 自动注入能解决的。
 - 你仍自行决断：单模型客户端、轻量短场景可跳过，直接写。
 
 ### ② 用户嫌文风僵硬 / 出戏
 - **建议**：用 `tune_preset` 改**预设源头**；不要靠重生成或对输出做后处理。
-- **为何要先想**：风格其实**已经成功迁移**（特供预设会盖过宿主模型本味）。问题在预设**内容**，常是跨模型的压制脚手架在当前模型上过度压制。
+- **为何要先想**：AIRP 保留预设源文件但不模拟 SillyTavern Prompt Manager；先用结构化读取定位真正影响当前 Agent/model 的源字段，再改最小范围。
 - **不先想的代价**：重生成/后处理只是**洗稿**（治标），且每轮**多烧一遍 token**；源头不改，下轮照样僵。
 - 你仍自行决断：若预设本就适配当前模型，可不动。
 
@@ -115,7 +115,7 @@ AIRP 的角色：
 ```
 import_card(png_path="./card/角色.png")    # 推荐：服务端读盘，base64 不进上下文
 ```
-> ⚠️ **别自己 Read PNG 再 base64**：一张 10 MiB 卡 ≈ 13 MiB base64 文本灌进上下文，**烧光 token**（社区实测「蓝屏级卡死」）。用 `png_path` 让 AIRP 服务端读+解析（无大小限制）；仅当文件路径不可达时才退回 `png_base64`（≤ 10 MiB）。
+> ⚠️ **别自己 Read PNG 再 base64**：一张 10 MiB 卡 ≈ 13 MiB base64 文本灌进上下文，**烧光 token**（社区实测「蓝屏级卡死」）。用 `png_path` 让 AIRP 服务端读+解析（服务端上限 ≤ 256 MiB）；仅当文件路径不可达时才退回 `png_base64`（≤ 10 MiB）。
 >
 > `_path` 参数（`png_path`/`preset_path`/`lorebook_path`）的路径基准是 **AIRP 服务端进程的 cwd**，支持相对路径和绝对路径。
 
@@ -201,11 +201,11 @@ apply_lorebook(character_id, text="我们在天剑阁门前停下")
 ```
 
 ### 更新世界书
-```
+```text
 update_lorebook(character_id="凌欺霜", lorebook_path="/path/to/world_book.json")   # 推荐：服务端读盘，JSON 不进上下文
 update_lorebook(character_id="凌欺霜", entries=[{id, name, keys, content, enabled, ...}])   # 退回：内联 JSON
 ```
-> ⚠️ **别把整本世界书当 `entries` 数组塞进上下文**：SillyTavern 世界书常有几十~几百条目，几十~几百 KB；走 `entries` 会原样进模型上下文，且 JSON-RPC 请求体在 Claude Desktop 等客户端有较低上限。用 `lorebook_path` 让 AIRP 服务端直接读文件，内容**不进上下文、无大小限制**，兼容 SillyTavern 的 `{entries: {...}}` 和 `{entries: [...]}` 两种格式；仅当文件路径不可达时才退回 `entries`。
+> ⚠️ **别把整本世界书当 `entries` 数组塞进上下文**：SillyTavern 世界书常有几十~几百条目，几十~几百 KB；走 `entries` 会原样进模型上下文，且 JSON-RPC 请求体在 Claude Desktop 等客户端有较低上限。用 `lorebook_path` 让 AIRP 服务端直接读文件，内容**不进上下文**（服务端上限 ≤ 256 MiB），兼容 SillyTavern 的 `{entries: {...}}` 和 `{entries: [...]}` 两种格式；路径不可达时调用会报错，需要改用 `entries` 重新调用。
 
 ---
 
@@ -246,16 +246,16 @@ update_state(character_id, state_delta={
 预设是 AIRP 的**杀手级功能**。它把用户调试好的文风、参数、正则过滤打包成一个可移植的数据包。
 
 ### 导入第三方预设
-```
+```text
 import_preset(preset_id="LENI", preset_path="/path/to/LENI.json")   # 推荐：服务端读盘，JSON 不进上下文
 → 写入 presets/LENI/preset.json
 ```
-> ⚠️ **别把完整预设 JSON 当字符串塞进 `preset_json`**：SillyTavern 预设常含大量 prompt + 正则，几十~几百 KB；走 `preset_json` 会原样进模型上下文，且 JSON-RPC 请求体在 Claude Desktop 等客户端有较低上限（会被拒或截断）。用 `preset_path` 让 AIRP 服务端直接读文件，预设内容**不进上下文、无大小限制**；仅当文件路径不可达时才退回 `preset_json`（≤ 64 MiB）。
+> ⚠️ **别把完整预设 JSON 当字符串塞进 `preset_json`**：SillyTavern 预设常含大量 prompt + 正则，几十~几百 KB；走 `preset_json` 会原样进模型上下文，且 JSON-RPC 请求体在 Claude Desktop 等客户端有较低上限（会被拒或截断）。用 `preset_path` 让 AIRP 服务端直接读文件，预设内容**不进上下文**（服务端安全上限 ≤ 32 MiB）；仅当文件路径不可达时才退回 `preset_json`（≤ 16 MiB）。
 
 ### 分析预设
 ```
-1. 读 airp://presets/LENI/raw → 获取原始 JSON
-2. 分析其中的 prompts、参数、正则规则
+1. 用 `read_preset_raw` 分页读取 `airp://presets/LENI/raw` 对应的原始 JSON（保留 revision）
+2. 或用 `read_preset_structure(pointer, offset, limit, max_bytes)` 分页分析 prompts、prompt_order、未知嵌套字段、参数和正则规则
 3. 用 write_preset_artifact 写分析产物：
    - analysis/summary.md    → 总览
    - analysis/regex_scripts.json → 正则规则提取
@@ -265,8 +265,8 @@ import_preset(preset_id="LENI", preset_path="/path/to/LENI.json")   # 推荐：�
 ### 在 RP 中使用预设
 ```
 start_session(character_id="凌欺霜", preset_id="LENI")
-→ 自动加载 LENI 的文风、参数、正则过滤脚本
-→ build_system_prompt 会自动将 preset 文风注入系统提示词
+→ 记录 preset 关联并加载参数/正则视图
+→ build_system_prompt 仅使用 legacy AIRP config 的显式 prefix/suffix；ST prompts/prompt_order 由 Agent 自行组装
 ```
 
 ### 管理正则脚本
@@ -429,6 +429,8 @@ rollback_messages(character_id, session_id, n=3)
 | 卷 | `seal_volume` | character_id, session_id, clear_session? |
 | 预设 | `list_presets` | — |
 | 预设 | `get_preset` | preset_id |
+| 预设 | `read_preset_raw` | preset_id, offset?, max_bytes?, expected_revision? |
+| 预设 | `read_preset_structure` | preset_id, pointer?, offset?, limit?, max_bytes?, expected_revision? |
 | 预设 | `import_preset` | preset_id, preset_path（推荐）/ preset_json |
 | 预设 | `write_preset_artifact` | preset_id, artifact_path, content |
 | 预设 | `list_preset_regex_scripts` | preset_id |
@@ -443,7 +445,7 @@ rollback_messages(character_id, session_id, n=3)
 | 场景 | `get_scene` | scene_id |
 | 场景 | `add_character_to_scene` | scene_id, character_id, role?, intro? |
 | 场景 | `merge_lorebooks` | character_ids, strategy? (union/primary_only) |
-| 场景 | `build_scene_system_prompt` | scene_id, user_name?, preset_id?, style_enhance? |
+| 场景 | `build_scene_system_prompt` | scene_id, user_name?, preset_id?, style_enhance?（ST prompts 不注入） |
 | 插件 | `plugin_kv_get` | plugin_name, key |
 | 插件 | `plugin_kv_set` | plugin_name, key, value_json |
 | 插件 | `plugin_jsonl_append` | plugin_name, file, line_json |
@@ -465,7 +467,7 @@ rollback_messages(character_id, session_id, n=3)
 | `airp://characters/{id}/memory/volumes/{n}` | 归档卷 (n="latest" = 最新) |
 | `airp://presets` | 预设 ID 列表 |
 | `airp://presets/{id}` | 预设详情 |
-| `airp://presets/{id}/raw` | 预设原始 JSON（⚠️ 同上截断；大预设用 `decompose_preset` 拿结构化摘要） |
+| `airp://presets/{id}/raw` | 旧客户端兼容的预设原始 JSON（⚠️ 同上截断；完整续读用 `read_preset_raw`，结构化用 `read_preset_structure`） |
 | `airp://presets/{id}/artifacts` | 预设分析产物树 |
 | `airp://presets/{id}/regex` | 预设正则脚本 |
 | `airp://scenes` | 场景列表 |
@@ -718,7 +720,7 @@ add_character_to_scene(scene_id, character_id, role, intro) → 添加角色
 ## 16. 执行隔离 — 用 subagent 写 RP（强烈建议）
 
 > 主 Agent（编排 Claude Code 的那个）上下文里塞满编程身份、几十个工具 schema、
-> harness 提醒。它**直接写 RP**，文笔会被编程腔压扁 —— 即使预设文风已成功注入，
+> harness 提醒。它**直接写 RP**，文笔会被编程腔压扁 —— 即使 Agent 正确应用了原始预设字段，
 > 输出仍显「僵硬/出戏」。这是文笔质量问题，不是指令遵循问题。
 
 ### 推荐模式
@@ -727,7 +729,7 @@ add_character_to_scene(scene_id, character_id, role, intro) → 添加角色
 2. export_context_bundle(character_id, preset_id?, thinking_mode_text?) → 产出成品上下文包：
      {out_dir}/{character_id}/
        ├── context.md        # 零占位、自包含；thinking_mode_text（如传）置于最前 + 人设+文风+状态正文
-       ├── preset_raw.json   # 完整预设(含 prompts[])原样旁路，subagent 自行应用
+       ├── preset_raw.json   # 原始 source JSON（含 prompts/prompt_order/未知字段）原样旁路，subagent 自行应用
        └── extensions.json   # 角色卡未知捆绑内容原样旁路（如有）
 3. 拉一个 subagent（你的 Task 工具），把 context.md 作为它的全部系统上下文
 4. subagent 在干净上下文里写 RP —— 预设文风主导，无编程腔竞争
@@ -742,7 +744,7 @@ subagent 上下文 ≈ 只有你给的人设 → 文风锚不被稀释。隔离�
 - `export_context_bundle` = **成品**（零占位、落盘、自包含），直接喂 subagent
 
 ### 边界 / 守则
-- AIRP 只装配**已知 RP 字段**进 context.md；**未知捆绑内容**（preset `prompts[]`、card `extensions`）原样旁路到 sidecar，**AIRP 不解析语义**，由 subagent 决定如何应用。
+- AIRP 只装配**已知 RP 字段**进 context.md；**未知捆绑内容**（preset `prompts[]`、`prompt_order`、card `extensions`）原样旁路到 sidecar，**AIRP 不解析语义**，由 subagent 决定如何应用。
 - 输出**通用 Markdown**，不带任何客户端 skill 格式 —— 要 skill 化，由你在宿主侧封装。
 - **关于世界书——§0.5 ④ 的有意例外**：逐轮关键词触发（`apply_lorebook`）只在**主 Agent 运行时（有 MCP）**适用。subagent 拿到 bundle 后**身处隔离上下文、无 MCP**，中途无法触发，故 `include_lorebook=true` 时世界书**全量预载进 `context.md`**。多角色同场时尤其必须——整个 ensemble（各角色人设 + 跨角色世界书）必须共驻上下文，剧情才靠角色互相反应推进；懒加载会饿死跨角色推理。两个上下文、两套策略，不矛盾。
 - **非强制**：单模型客户端、轻量场景可跳过，直接在主上下文写。Agent 自行抉择。

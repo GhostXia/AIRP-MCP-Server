@@ -21,6 +21,14 @@ impl AirpMcpServer {
 
         let (png_data, source) = match (png_base64, png_path) {
             (Some(b64), None) => {
+                if base64_decoded_len(b64).is_some_and(|len| len > MAX_PNG_BASE64_BYTES)
+                    || b64.len() > MAX_PNG_BASE64_BYTES.div_ceil(3) * 4
+                {
+                    return Err(crate::error::AirpError::Validation(format!(
+                        "PNG too large: decoded content exceeds {} byte cap; use png_path to import from a file",
+                        MAX_PNG_BASE64_BYTES
+                    )));
+                }
                 let data = base64_decode(b64)?;
                 if data.len() > MAX_PNG_BASE64_BYTES {
                     return Err(crate::error::AirpError::Validation(format!(
@@ -182,7 +190,10 @@ impl AirpMcpServer {
                     meta.preset_id = Some(preset_id.as_ref().to_string());
                     let updated_meta = serde_json::to_string_pretty(&meta)?;
                     tokio::fs::write(&meta_path, updated_meta).await?;
-                    info_lines.push(format!("Preset applied: {} ({})", preset.name, pid));
+                    info_lines.push(format!(
+                        "Preset linked: {} ({}); raw source retained for Agent-directed application",
+                        preset.name, pid
+                    ));
 
                     // Load and report SillyTavern regex scripts
                     let regex_dir = self.storage.preset_regex_dir(pid);
@@ -648,6 +659,120 @@ impl AirpMcpServer {
         Ok(json)
     }
 
+    /// Agent-facing byte pager for the authoritative `preset.json` source.
+    /// Unlike the legacy resource, this returns an exact UTF-8 page (BOM
+    /// included) and a revision/offset cursor that can be continued safely.
+    pub async fn handle_read_preset_raw(&self, args: Value) -> Result<String> {
+        let preset_id = args["preset_id"]
+            .as_str()
+            .ok_or_else(|| AirpError::Validation("Missing preset_id".into()))?;
+        let id = PresetId::new(preset_id)?;
+        let offset = parse_u64_arg(&args, "offset", 0)?;
+        let max_bytes = parse_page_bytes(&args)?;
+        let expected_revision = args["expected_revision"].as_str();
+
+        let store = PresetStore::new(&self.storage);
+        let page = store
+            .read_raw_page(&id, offset, max_bytes, expected_revision)
+            .await?;
+        encode_raw_page_with_budget(page, max_bytes)
+    }
+
+    /// Lossless, Agent-facing structural view over the raw preset JSON.
+    /// RFC6901 pointers select any nested value; arrays retain source index
+    /// order and objects use serde_json's deterministic key order.  A page is
+    /// built incrementally, so a large sibling value is represented by its
+    /// type and child pointer and can be fetched recursively without ever
+    /// producing an oversized response.
+    pub async fn handle_read_preset_structure(&self, args: Value) -> Result<String> {
+        let preset_id = args["preset_id"]
+            .as_str()
+            .ok_or_else(|| AirpError::Validation("Missing preset_id".into()))?;
+        let id = PresetId::new(preset_id)?;
+        let pointer = args["pointer"].as_str().unwrap_or("");
+        let offset = parse_u64_arg(&args, "offset", 0)?;
+        let limit = parse_structure_limit(&args)?;
+        let max_bytes = parse_page_bytes(&args)?;
+        let expected_revision = args["expected_revision"].as_str();
+
+        let path = self.storage.preset_json_path(id.as_ref());
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|_| AirpError::PresetNotFound(id.as_ref().to_string()))?;
+        let revision = crate::storage::preset_store::raw_revision_for_path(&path).await?;
+        if let Some(expected) = expected_revision {
+            if expected != revision {
+                return Err(AirpError::Validation(format!(
+                    "preset revision changed: expected {}, current {}",
+                    expected, revision
+                )));
+            }
+        }
+        let total_bytes = metadata.len();
+        const MAX_STRUCTURE_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+        if total_bytes > MAX_STRUCTURE_SOURCE_BYTES {
+            return Err(AirpError::Validation(format!(
+                "preset structure source exceeds {} bytes; use read_preset_raw pages first",
+                MAX_STRUCTURE_SOURCE_BYTES
+            )));
+        }
+        let raw = tokio::fs::read(&path).await?;
+        let json_bytes = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&raw);
+        let document: Value = serde_json::from_slice(json_bytes).map_err(|err| {
+            AirpError::Validation(format!("preset raw content is not valid JSON: {}", err))
+        })?;
+        let selected = resolve_json_pointer(&document, pointer)?;
+
+        let after_revision = crate::storage::preset_store::raw_revision_for_path(&path).await?;
+        if after_revision != revision {
+            return Err(AirpError::Validation(format!(
+                "preset revision changed during read: {} -> {}",
+                revision, after_revision
+            )));
+        }
+
+        let page_ctx = StructurePageContext {
+            preset_id: id.as_ref(),
+            pointer,
+            offset,
+            limit,
+            max_bytes,
+            revision: &revision,
+            total_bytes,
+        };
+        let response = match selected {
+            Value::Array(items) => structure_array_page(items, &page_ctx)?,
+            Value::Object(entries) => structure_object_page(entries, &page_ctx)?,
+            Value::String(text) => structure_string_page(text, &page_ctx)?,
+            scalar => structure_scalar_page(
+                id.as_ref(),
+                pointer,
+                scalar,
+                max_bytes,
+                &revision,
+                total_bytes,
+            )?,
+        };
+        // The page builders enforce the budget incrementally.  Keep this
+        // assertion close to the boundary so future edits cannot silently
+        // reintroduce a post-hoc "truncate a complete response" path.
+        let encoded = serde_json::to_vec(&response)?;
+        if encoded.len() > max_bytes {
+            return Err(AirpError::Validation(format!(
+                "structured preset response exceeds max_bytes {} (use a deeper pointer or smaller page)",
+                max_bytes
+            )));
+        }
+        // Ensure the returned object remains an object if a builder is later
+        // refactored to return a borrowed value.
+        if !response.is_object() {
+            return Err(AirpError::Validation(
+                "invalid structured page response".into(),
+            ));
+        }
+        Ok(String::from_utf8(encoded).expect("serde_json emits UTF-8"))
+    }
+
     // Decompose tools
 
     pub async fn handle_decompose_character(&self, args: Value) -> Result<String> {
@@ -704,9 +829,13 @@ impl AirpMcpServer {
 
         let id = PresetId::new(preset_id)?;
 
-        // Get preset
-        let store = PresetStore::new(&self.storage);
-        let preset = store.get(&id).await?;
+        // Read once so every derived artifact comes from the same atomic file
+        // snapshot, even if an import replaces preset.json concurrently.
+        let raw_path = self.storage.preset_json_path(id.as_ref());
+        let raw = tokio::fs::read(&raw_path).await?;
+        let json_bytes = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&raw);
+        let value: Value = serde_json::from_slice(json_bytes)?;
+        let preset = crate::storage::preset_store::parse_raw_preset(&id, &value)?;
 
         // Decompose
         let config = crate::mcp::DecomposeConfig {
@@ -716,7 +845,33 @@ impl AirpMcpServer {
         };
 
         let decomposer = crate::mcp::PresetDecomposer::new();
-        let result = decomposer.decompose(&preset, &config).await?;
+        let mut result = decomposer.decompose(&preset, &config).await?;
+
+        // Keep the source document beside the human-readable summaries.  The
+        // summaries are convenience views only; `preset_raw.json` and the
+        // typed manifest are the lossless Agent-facing handoff for prompts,
+        // prompt_order, arrays, and unknown nested fields.
+        let output_dir = std::path::Path::new(&result.target_dir);
+        tokio::fs::write(output_dir.join("preset_raw.json"), &raw).await?;
+        result
+            .files_written
+            .push(output_dir.join("preset_raw.json").display().to_string());
+        let manifest = serde_json::json!({
+            "preset_id": id.as_ref(),
+            "source": "preset_raw.json",
+            "lossless": true,
+            "root_type": json_type(&value),
+            "top_level_keys": value.as_object().map(|obj| obj.keys().collect::<Vec<_>>()).unwrap_or_default(),
+            "note": "Use read_preset_structure for RFC6901 pages; AIRP does not interpret SillyTavern prompt ordering."
+        });
+        tokio::fs::write(
+            output_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest)?,
+        )
+        .await?;
+        result
+            .files_written
+            .push(output_dir.join("manifest.json").display().to_string());
 
         Ok(format!(
             "Preset '{}' decomposed successfully.\nTarget directory: {}\nFiles created: {}",
@@ -1215,10 +1370,10 @@ impl AirpMcpServer {
             .ok_or_else(|| AirpError::Validation("Missing scene_id".to_string()))?;
         let user_name = args["user_name"].as_str().unwrap_or("User");
         let preset_id = args["preset_id"].as_str();
-        // Opt-in style enhancement (non-mandatory, default off). Injects each
-        // character's dialogue examples + the preset suffix as voice anchors.
-        // Enhancement only: grows the prompt, may improve style fidelity, but
-        // does NOT guarantee the final output style.
+        // Opt-in style enhancement (non-mandatory, default off). It adds each
+        // character's dialogue examples as voice anchors. SillyTavern
+        // prompts/prompt_order stay opaque; only legacy AIRP anchors can be
+        // assembled below.
         let style_enhance = args["style_enhance"].as_bool().unwrap_or(false);
 
         let config = self.storage.load_scene(scene_id).await?;
@@ -1320,9 +1475,9 @@ impl AirpMcpServer {
                     prompt.push_str(&preset.config.system_prompt_prefix);
                     prompt.push('\n');
                 }
-                // Suffix = post-history style anchor at the very end (e.g. "keep
-                // voice vivid"). Opt-in (style_enhance); single-char
-                // preset.build_system_prompt always honors it.
+                // Legacy AIRP suffix is an explicit source anchor. ST presets
+                // have empty runtime anchors because AIRP does not emulate the
+                // SillyTavern Prompt Manager.
                 if style_enhance && !preset.config.system_prompt_suffix.is_empty() {
                     prompt.push_str(&preset.config.system_prompt_suffix);
                     prompt.push('\n');
@@ -1362,8 +1517,8 @@ impl AirpMcpServer {
         let character = char_store.get(&id).await?;
 
         // 1. Assembled clean prose (known fields; mes_example is included by
-        //    card.build_system_prompt). Preset adds prefix/suffix only — its
-        //    full prompts[] body goes to the sidecar, not interpreted here.
+        //    card.build_system_prompt). A legacy AIRP preset may add explicit
+        //    config anchors; ST raw prompts remain sidecar-only.
         let char_prompt = character.card.build_system_prompt();
         let mut prose = if let Some(pid) = preset_id {
             let preset_store = PresetStore::new(&self.storage);
@@ -1429,8 +1584,9 @@ impl AirpMcpServer {
                 tokio::fs::write(dir.join("preset_raw.json"), &raw).await?;
                 files.push("preset_raw.json".to_string());
                 context_md.push_str(
-                    "\n> Sidecar `preset_raw.json` — full preset incl. prompts[] \
-                    (AIRP does not interpret; apply it for max style fidelity).\n",
+                    "\n> Sidecar `preset_raw.json` — exact source incl. prompts[], \
+                    prompt_order, and unknown fields (AIRP does not interpret; \
+                    the Agent decides how to apply it).\n",
                 );
             }
         }
@@ -1472,96 +1628,116 @@ impl AirpMcpServer {
         let preset_json = args["preset_json"].as_str();
         let preset_path_arg = args["preset_path"].as_str();
 
-        validate_id_segment(preset_id)?;
+        let preset_id = PresetId::new(preset_id)?;
 
         // Issue #28 bug 2: preset_json via JSON-RPC hits a low size limit in
         // many MCP clients (Claude Desktop, etc.). preset_path lets the server
         // read the file directly — the preset content never enters the model
         // context, and large SillyTavern presets (with big prompts[] arrays)
         // can be imported without hitting request-body caps. Mirrors the
-        // png_path pattern in handle_import_card.
+        // png_path pattern in handle_import_card, while retaining a bounded
+        // server-side read so parsing a hostile file cannot exhaust memory.
         //
-        // preset_json cap (64 MiB) is on the string LITERAL — the actual
+        // preset_json cap (16 MiB) is on the string LITERAL — the actual
         // JSON-RPC transmission is larger due to JSON escape (e.g. `"` → `\"`,
-        // `\n` → `\\n`). A 40 MiB preset JSON can expand to 80+ MiB in the
-        // request body and still blow client limits. For large presets, use
-        // preset_path instead.
+        // `\n` → `\\n`). A 10 MiB preset JSON can expand substantially in the
+        // request body and still blow client limits. For larger presets, use
+        // preset_path instead (up to its 32 MiB server-side safety limit).
         //
-        // preset_path has a 256 MiB safety net to prevent OOM; content stays
-        // server-side only (no context-burn risk).
-        const MAX_PRESET_JSON_BYTES: usize = 64 * 1024 * 1024;
-        const MAX_PATH_READ_BYTES: u64 = 256 * 1024 * 1024;
+        // preset_path has a 32 MiB safety net to prevent OOM; content stays
+        // server-side only (no context-burn risk).  Metadata is checked
+        // before allocating the file buffer.
+        const MAX_PRESET_JSON_BYTES: usize = 16 * 1024 * 1024;
+        const MAX_PATH_READ_BYTES: u64 = 32 * 1024 * 1024;
 
-        let (preset_bytes, source_label) = match (preset_json, preset_path_arg) {
-            (Some(json), None) => {
-                let bytes = json.as_bytes();
-                if bytes.len() > MAX_PRESET_JSON_BYTES {
-                    return Err(AirpError::Validation(format!(
-                        "preset_json too large: {} bytes exceeds {} byte cap; use preset_path to import from a file",
-                        bytes.len(),
-                        MAX_PRESET_JSON_BYTES
-                    )));
-                }
-                (bytes.to_vec(), "preset_json")
+        if preset_json.is_some() && preset_path_arg.is_some() {
+            return Err(AirpError::Validation(
+                "provide exactly one of preset_json / preset_path".to_string(),
+            ));
+        }
+        if preset_json.is_none() && preset_path_arg.is_none() {
+            return Err(AirpError::Validation(
+                "missing preset_json or preset_path".to_string(),
+            ));
+        }
+
+        let path_bytes;
+        let (preset_bytes, source_label): (&[u8], &str) = if let Some(json) = preset_json {
+            let bytes = json.as_bytes();
+            if bytes.len() > MAX_PRESET_JSON_BYTES {
+                return Err(AirpError::Validation(format!(
+                    "preset_json too large: {} bytes exceeds {} byte cap; use preset_path to import from a file",
+                    bytes.len(),
+                    MAX_PRESET_JSON_BYTES
+                )));
             }
-            (None, Some(path)) => {
-                let meta = tokio::fs::metadata(path).await.map_err(|e| {
-                    AirpError::Validation(format!(
-                        "preset_path not accessible: {} (path: {}). \
+            // Borrow the request-owned string; save_raw parses and writes it
+            // without manufacturing a second full-sized Vec/String copy.
+            (bytes, "preset_json")
+        } else {
+            let path = preset_path_arg.expect("checked that preset_path is present");
+            use tokio::io::AsyncReadExt;
+
+            let meta = tokio::fs::metadata(path).await.map_err(|e| {
+                AirpError::Validation(format!(
+                    "preset_path not accessible: {} (path: {}). \
                          Tip: use a relative path from the server cwd, or an absolute path.",
-                        e, path
-                    ))
-                })?;
-                if !meta.is_file() {
-                    return Err(AirpError::Validation(format!(
-                        "preset_path is not a regular file: {} (found {})",
-                        path,
-                        if meta.is_dir() { "directory" } else { "other" }
-                    )));
-                }
-                if meta.len() > MAX_PATH_READ_BYTES {
-                    return Err(AirpError::Validation(format!(
-                        "preset_path too large: {} bytes exceeds {} byte safety limit",
-                        meta.len(),
-                        MAX_PATH_READ_BYTES
-                    )));
-                }
-                let bytes = tokio::fs::read(path).await.map_err(|e| {
+                    e, path
+                ))
+            })?;
+            if !meta.is_file() {
+                return Err(AirpError::Validation(format!(
+                    "preset_path is not a regular file: {} (found {})",
+                    path,
+                    if meta.is_dir() { "directory" } else { "other" }
+                )));
+            }
+            if meta.len() > MAX_PATH_READ_BYTES {
+                return Err(AirpError::Validation(format!(
+                    "preset_path too large: {} bytes exceeds {} byte safety limit",
+                    meta.len(),
+                    MAX_PATH_READ_BYTES
+                )));
+            }
+            // Bound the actual read as well as the metadata check so a file
+            // that grows between the two operations cannot bypass the cap.
+            let file = tokio::fs::File::open(path).await.map_err(|e| {
+                AirpError::Validation(format!(
+                    "failed to read preset_path {}: {} (permission denied?)",
+                    path, e
+                ))
+            })?;
+            let mut bounded = Vec::new();
+            file.take(MAX_PATH_READ_BYTES.saturating_add(1))
+                .read_to_end(&mut bounded)
+                .await
+                .map_err(|e| {
                     AirpError::Validation(format!(
                         "failed to read preset_path {}: {} (permission denied?)",
                         path, e
                     ))
                 })?;
-                (bytes, "preset_path")
+            if bounded.len() as u64 > MAX_PATH_READ_BYTES {
+                return Err(AirpError::Validation(format!(
+                    "preset_path too large: more than {} bytes",
+                    MAX_PATH_READ_BYTES
+                )));
             }
-            (Some(_), Some(_)) => {
-                return Err(AirpError::Validation(
-                    "provide exactly one of preset_json / preset_path".to_string(),
-                ));
-            }
-            (None, None) => {
-                return Err(AirpError::Validation(
-                    "missing preset_json or preset_path".to_string(),
-                ));
-            }
+            path_bytes = bounded;
+            (&path_bytes, "preset_path")
         };
 
-        // Validate JSON before writing (catches corruption early).
-        let preset_str = String::from_utf8(preset_bytes)
-            .map_err(|_| AirpError::Validation("preset content is not valid UTF-8".to_string()))?;
-        let _: serde_json::Value = serde_json::from_str(&preset_str)
-            .map_err(|e| AirpError::Validation(format!("preset is not valid JSON: {}", e)))?;
-
-        let bytes_read = preset_str.len();
-
-        let preset_path = self.storage.preset_json_path(preset_id);
-        if let Some(parent) = preset_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&preset_path, &preset_str).await?;
+        // Validate the complete schema before writing, then preserve the
+        // exact source bytes as the sole authority. PresetStore::save_raw
+        // commits through a same-directory flushed/synced temp file and an
+        // atomic rename.
+        let bytes_read = preset_bytes.len();
+        let store = PresetStore::new(&self.storage);
+        store.save_raw(&preset_id, preset_bytes).await?;
+        let preset_path = self.storage.preset_json_path(preset_id.as_ref());
 
         Ok(serde_json::json!({
-            "preset_id": preset_id,
+            "preset_id": preset_id.as_ref(),
             "path": preset_path.to_string_lossy(),
             "bytes_read": bytes_read,
             "source": source_label,
@@ -1588,6 +1764,13 @@ impl AirpMcpServer {
         let artifact_full = self
             .storage
             .safe_resolve_for_write(&preset_dir, artifact_path)?;
+        let canonical_preset_dir = preset_dir.canonicalize().unwrap_or(preset_dir.clone());
+        if is_reserved_preset_artifact(&canonical_preset_dir, &artifact_full) {
+            return Err(AirpError::Validation(format!(
+                "artifact path is reserved for authoritative preset storage: {}",
+                artifact_path
+            )));
+        }
         if let Some(parent) = artifact_full.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -2067,6 +2250,494 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(input)
         .map_err(|e| crate::error::AirpError::Validation(format!("Base64 decode error: {}", e)))
+}
+
+fn base64_decoded_len(input: &str) -> Option<usize> {
+    if input.len().checked_rem(4) != Some(0) {
+        return None;
+    }
+    let padding = input
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|&&byte| byte == b'=')
+        .count();
+    if padding > 2 {
+        return None;
+    }
+    input
+        .len()
+        .checked_div(4)?
+        .checked_mul(3)?
+        .checked_sub(padding)
+}
+
+fn is_reserved_preset_artifact(base: &std::path::Path, path: &std::path::Path) -> bool {
+    let Ok(relative) = path.strip_prefix(base) else {
+        return true;
+    };
+    if relative.components().count() != 1 {
+        return false;
+    }
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    // Windows ignores trailing dots/spaces in normal file names and uses ':'
+    // for alternate data streams. Apply those equivalence rules everywhere
+    // so a request cannot become authoritative after crossing the OS boundary.
+    let filesystem_name = name.split(':').next().unwrap_or(name);
+    let folded = filesystem_name
+        .trim_end_matches(['.', ' '])
+        .to_ascii_lowercase();
+    folded == "preset.json" || folded.starts_with(".preset.json.tmp-")
+}
+
+fn parse_u64_arg(args: &Value, name: &str, default: u64) -> Result<u64> {
+    match args.get(name) {
+        None | Some(Value::Null) => Ok(default),
+        Some(value) => value.as_u64().ok_or_else(|| {
+            AirpError::Validation(format!("{} must be a non-negative integer", name))
+        }),
+    }
+}
+
+fn parse_page_bytes(args: &Value) -> Result<usize> {
+    let cap = crate::mcp::max_read_bytes();
+    let requested = parse_u64_arg(args, "max_bytes", cap as u64)?;
+    let requested = usize::try_from(requested)
+        .map_err(|_| AirpError::Validation("max_bytes is too large".into()))?;
+    if requested == 0 {
+        return Err(AirpError::Validation(
+            "max_bytes must be greater than zero".into(),
+        ));
+    }
+    if requested > cap {
+        return Err(AirpError::Validation(format!(
+            "max_bytes {} exceeds AIRP_MAX_READ_BYTES {}",
+            requested, cap
+        )));
+    }
+    Ok(requested)
+}
+
+fn encode_raw_page_with_budget(
+    mut page: crate::storage::preset_store::PresetRawPage,
+    max_bytes: usize,
+) -> Result<String> {
+    let source = page.content.clone();
+    let mut low = 0usize;
+    let mut high = source.len();
+    let mut best = None;
+
+    while low <= high {
+        let midpoint = low + (high - low) / 2;
+        let mut end = midpoint.min(source.len());
+        while end > 0 && !source.is_char_boundary(end) {
+            end -= 1;
+        }
+        page.content = source[..end].to_string();
+        page.returned_bytes = end;
+        page.next_offset = page.offset.saturating_add(end as u64);
+        page.has_more = page.next_offset < page.total_bytes;
+        let encoded = serde_json::to_vec(&page)?;
+        if encoded.len() <= max_bytes {
+            best = Some(encoded);
+            low = midpoint.saturating_add(1);
+        } else if end == 0 {
+            break;
+        } else {
+            high = end - 1;
+        }
+    }
+
+    let encoded = best.ok_or_else(|| {
+        AirpError::Validation(format!(
+            "raw preset page metadata exceeds max_bytes {}",
+            max_bytes
+        ))
+    })?;
+    String::from_utf8(encoded).map_err(|_| AirpError::Validation("invalid UTF-8 page".into()))
+}
+
+fn parse_structure_limit(args: &Value) -> Result<usize> {
+    let requested = parse_u64_arg(args, "limit", 100)?;
+    let requested = usize::try_from(requested)
+        .map_err(|_| AirpError::Validation("limit is too large".into()))?;
+    if requested == 0 {
+        return Err(AirpError::Validation(
+            "limit must be greater than zero".into(),
+        ));
+    }
+    // A page with millions of siblings is almost certainly an accidental
+    // budget bypass.  Callers can continue with the returned next_offset.
+    if requested > 10_000 {
+        return Err(AirpError::Validation(
+            "limit exceeds the maximum page size 10000".into(),
+        ));
+    }
+    Ok(requested)
+}
+
+fn resolve_json_pointer<'a>(root: &'a Value, pointer: &str) -> Result<&'a Value> {
+    if pointer.is_empty() {
+        return Ok(root);
+    }
+    if !pointer.starts_with('/') {
+        return Err(AirpError::Validation(
+            "pointer must be an RFC6901 JSON pointer (empty or starting with '/')".into(),
+        ));
+    }
+    let mut current = root;
+    for raw_token in pointer.split('/').skip(1) {
+        let token = decode_pointer_token(raw_token)?;
+        current = match current {
+            Value::Object(object) => object.get(&token).ok_or_else(|| {
+                AirpError::Validation(format!("pointer component not found: /{}", token))
+            })?,
+            Value::Array(array) => {
+                let index = token.parse::<usize>().map_err(|_| {
+                    AirpError::Validation(format!(
+                        "array pointer component is not an index: {}",
+                        token
+                    ))
+                })?;
+                array.get(index).ok_or_else(|| {
+                    AirpError::Validation(format!("array pointer index out of range: {}", index))
+                })?
+            }
+            _ => {
+                return Err(AirpError::Validation(format!(
+                    "pointer traverses a {} value",
+                    json_type(current)
+                )));
+            }
+        };
+    }
+    Ok(current)
+}
+
+fn decode_pointer_token(token: &str) -> Result<String> {
+    let mut decoded = String::with_capacity(token.len());
+    let mut chars = token.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '~' {
+            decoded.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('0') => decoded.push('~'),
+            Some('1') => decoded.push('/'),
+            Some(other) => {
+                return Err(AirpError::Validation(format!(
+                    "invalid RFC6901 escape ~{}",
+                    other
+                )));
+            }
+            None => {
+                return Err(AirpError::Validation(
+                    "invalid trailing '~' in pointer".into(),
+                ));
+            }
+        }
+    }
+    Ok(decoded)
+}
+
+fn encode_pointer_token(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
+}
+
+struct StructurePageContext<'a> {
+    preset_id: &'a str,
+    pointer: &'a str,
+    offset: u64,
+    limit: usize,
+    max_bytes: usize,
+    revision: &'a str,
+    total_bytes: u64,
+}
+
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn structure_item(
+    pointer: String,
+    index: Option<usize>,
+    key: Option<&str>,
+    value: &Value,
+    max_bytes: usize,
+) -> Value {
+    let mut item = serde_json::Map::new();
+    if let Some(index) = index {
+        item.insert("index".into(), Value::from(index));
+    }
+    if let Some(key) = key {
+        item.insert("key".into(), Value::String(key.to_string()));
+    }
+    item.insert("pointer".into(), Value::String(pointer));
+    item.insert("type".into(), Value::String(json_type(value).into()));
+
+    // Keep each item's JSON type visible even when its value is too large for
+    // this page.  The child pointer lets the Agent recurse into that value;
+    // small values are copied verbatim, preserving numbers, booleans, nulls,
+    // arrays and objects rather than flattening them to Markdown.
+    let value_bytes = serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(max_bytes + 1);
+    if value_bytes.saturating_add(256) <= max_bytes {
+        item.insert("value".into(), value.clone());
+        item.insert("truncated".into(), Value::Bool(false));
+    } else {
+        item.insert("value".into(), Value::Null);
+        item.insert("truncated".into(), Value::Bool(true));
+    }
+    Value::Object(item)
+}
+
+fn container_page_base(
+    preset_id: &str,
+    pointer: &str,
+    value_type: &str,
+    revision: &str,
+    total_bytes: u64,
+    offset: u64,
+    limit: usize,
+) -> Value {
+    serde_json::json!({
+        "preset_id": preset_id,
+        "revision": revision,
+        "total_bytes": total_bytes,
+        "pointer": pointer,
+        "value_type": value_type,
+        "offset": offset,
+        "limit": limit,
+        "returned": 0,
+        "next_offset": offset,
+        "has_more": false,
+        "items": [],
+    })
+}
+
+fn finalize_container_page(
+    mut base: Value,
+    items: Vec<Value>,
+    total: usize,
+    offset: u64,
+    max_bytes: usize,
+) -> Result<Value> {
+    let returned = items.len();
+    let next = offset
+        .checked_add(returned as u64)
+        .ok_or_else(|| AirpError::Validation("next_offset overflow".into()))?;
+    let has_more = next < total as u64;
+    base["returned"] = Value::from(returned);
+    base["next_offset"] = Value::from(next);
+    base["has_more"] = Value::Bool(has_more);
+    base["items"] = Value::Array(items);
+    if serde_json::to_vec(&base)?.len() > max_bytes {
+        return Err(AirpError::Validation(format!(
+            "structured preset response exceeds max_bytes {}",
+            max_bytes
+        )));
+    }
+    Ok(base)
+}
+
+fn structure_array_page(values: &[Value], ctx: &StructurePageContext<'_>) -> Result<Value> {
+    let start = usize::try_from(ctx.offset)
+        .map_err(|_| AirpError::Validation("offset is too large".into()))?;
+    if start > values.len() {
+        return Err(AirpError::Validation(format!(
+            "offset {} exceeds array length {}",
+            ctx.offset,
+            values.len()
+        )));
+    }
+    let base = container_page_base(
+        ctx.preset_id,
+        ctx.pointer,
+        "array",
+        ctx.revision,
+        ctx.total_bytes,
+        ctx.offset,
+        ctx.limit,
+    );
+    let mut items = Vec::new();
+    for index in start..values.len().min(start.saturating_add(ctx.limit)) {
+        let child_pointer = if ctx.pointer.is_empty() {
+            format!("/{}", index)
+        } else {
+            format!("{}/{}", ctx.pointer, index)
+        };
+        let item = structure_item(
+            child_pointer,
+            Some(index),
+            None,
+            &values[index],
+            ctx.max_bytes,
+        );
+        let mut candidate_items = items.clone();
+        candidate_items.push(item.clone());
+        let mut candidate = base.clone();
+        candidate["returned"] = Value::from(candidate_items.len());
+        candidate["next_offset"] = Value::from(ctx.offset + candidate_items.len() as u64);
+        candidate["has_more"] =
+            Value::Bool(ctx.offset + (candidate_items.len() as u64) < values.len() as u64);
+        candidate["items"] = Value::Array(candidate_items);
+        if serde_json::to_vec(&candidate)?.len() > ctx.max_bytes {
+            break;
+        }
+        items.push(item);
+    }
+    if items.is_empty() && start < values.len() {
+        return Err(AirpError::Validation(
+            "first array item exceeds max_bytes; use its child pointer with a larger page budget"
+                .into(),
+        ));
+    }
+    finalize_container_page(base, items, values.len(), ctx.offset, ctx.max_bytes)
+}
+
+fn structure_object_page(
+    entries: &serde_json::Map<String, Value>,
+    ctx: &StructurePageContext<'_>,
+) -> Result<Value> {
+    let start = usize::try_from(ctx.offset)
+        .map_err(|_| AirpError::Validation("offset is too large".into()))?;
+    if start > entries.len() {
+        return Err(AirpError::Validation(format!(
+            "offset {} exceeds object length {}",
+            ctx.offset,
+            entries.len()
+        )));
+    }
+    let base = container_page_base(
+        ctx.preset_id,
+        ctx.pointer,
+        "object",
+        ctx.revision,
+        ctx.total_bytes,
+        ctx.offset,
+        ctx.limit,
+    );
+    let mut items = Vec::new();
+    for (key, value) in entries.iter().skip(start).take(ctx.limit) {
+        let escaped = encode_pointer_token(key);
+        let child_pointer = if ctx.pointer.is_empty() {
+            format!("/{}", escaped)
+        } else {
+            format!("{}/{}", ctx.pointer, escaped)
+        };
+        let item = structure_item(child_pointer, None, Some(key), value, ctx.max_bytes);
+        let mut candidate_items = items.clone();
+        candidate_items.push(item.clone());
+        let mut candidate = base.clone();
+        candidate["returned"] = Value::from(candidate_items.len());
+        candidate["next_offset"] = Value::from(ctx.offset + candidate_items.len() as u64);
+        candidate["has_more"] =
+            Value::Bool(ctx.offset + (candidate_items.len() as u64) < entries.len() as u64);
+        candidate["items"] = Value::Array(candidate_items);
+        if serde_json::to_vec(&candidate)?.len() > ctx.max_bytes {
+            break;
+        }
+        items.push(item);
+    }
+    if items.is_empty() && start < entries.len() {
+        return Err(AirpError::Validation(
+            "first object entry exceeds max_bytes; use its child pointer with a larger page budget"
+                .into(),
+        ));
+    }
+    finalize_container_page(base, items, entries.len(), ctx.offset, ctx.max_bytes)
+}
+
+fn structure_string_page(text: &str, ctx: &StructurePageContext<'_>) -> Result<Value> {
+    let start = usize::try_from(ctx.offset)
+        .map_err(|_| AirpError::Validation("offset is too large".into()))?;
+    if start > text.len() || !text.is_char_boundary(start) {
+        return Err(AirpError::Validation(format!(
+            "offset {} is not a UTF-8 boundary for string value",
+            ctx.offset
+        )));
+    }
+    let mut end = text.len().min(
+        start
+            .saturating_add(ctx.limit)
+            .min(start.saturating_add(ctx.max_bytes)),
+    );
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    loop {
+        let content = &text[start..end];
+        let next = end as u64;
+        let candidate = serde_json::json!({
+            "preset_id": ctx.preset_id,
+            "revision": ctx.revision,
+            "total_bytes": ctx.total_bytes,
+            "pointer": ctx.pointer,
+            "value_type": "string",
+            "offset": ctx.offset,
+            "limit": ctx.limit,
+            "returned_bytes": content.len(),
+            "next_offset": next,
+            "has_more": end < text.len(),
+            "content": content,
+        });
+        let encoded_len = serde_json::to_vec(&candidate)?.len();
+        if encoded_len <= ctx.max_bytes || end == start {
+            if encoded_len > ctx.max_bytes {
+                return Err(AirpError::Validation(format!(
+                    "structured string response exceeds max_bytes {}",
+                    ctx.max_bytes
+                )));
+            }
+            return Ok(candidate);
+        }
+        end = text[..end]
+            .char_indices()
+            .next_back()
+            .map(|(idx, _)| idx)
+            .unwrap_or(start);
+    }
+}
+
+fn structure_scalar_page(
+    preset_id: &str,
+    pointer: &str,
+    value: &Value,
+    max_bytes: usize,
+    revision: &str,
+    total_bytes: u64,
+) -> Result<Value> {
+    let response = serde_json::json!({
+        "preset_id": preset_id,
+        "revision": revision,
+        "total_bytes": total_bytes,
+        "pointer": pointer,
+        "value_type": json_type(value),
+        "offset": 0,
+        "limit": 1,
+        "returned": 1,
+        "next_offset": 1,
+        "has_more": false,
+        "value": value,
+    });
+    if serde_json::to_vec(&response)?.len() > max_bytes {
+        return Err(AirpError::Validation(format!(
+            "scalar value exceeds max_bytes {}; use a pointer to a nested value or a larger page budget",
+            max_bytes
+        )));
+    }
+    Ok(response)
 }
 
 fn class_reason(has_state: bool, has_lorebook: bool) -> &'static str {
