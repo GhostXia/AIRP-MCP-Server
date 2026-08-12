@@ -4,6 +4,7 @@
 //! `Preset` value returned by this module is a small AIRP view used by the
 //! runtime; it is never written back when a SillyTavern document is read.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -198,23 +199,27 @@ impl<'a> PresetStore<'a> {
         }
 
         let mut entries = fs::read_dir(&presets_dir).await?;
-        let mut presets = vec![];
+        let mut candidates: BTreeMap<String, (bool, PathBuf)> = BTreeMap::new();
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            let (id_text, preset_path) = if path.is_dir() {
+            let (id_text, preset_path, canonical) = if path.is_dir() {
                 let Some(id_text) = path.file_name().and_then(|n| n.to_str()) else {
                     warn!(path = ?path, "Skipping preset with non-UTF8 directory name");
                     continue;
                 };
-                (id_text.to_string(), path.join("preset.json"))
+                let preset_path = path.join("preset.json");
+                if !preset_path.is_file() {
+                    continue;
+                }
+                (id_text.to_string(), preset_path, true)
             } else if path.is_file() && path.extension().is_some_and(|e| e == "json") {
                 // Flat files are accepted during migration/upgrade windows.
                 let Some(id_text) = path.file_stem().and_then(|n| n.to_str()) else {
                     warn!(path = ?path, "Skipping preset with non-UTF8 file name");
                     continue;
                 };
-                (id_text.to_string(), path.clone())
+                (id_text.to_string(), path.clone(), false)
             } else {
                 continue;
             };
@@ -226,6 +231,20 @@ impl<'a> PresetStore<'a> {
                     continue;
                 }
             };
+            match candidates.entry(id.as_ref().to_string()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert((canonical, preset_path));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) if canonical => {
+                    entry.insert((true, preset_path));
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
+
+        let mut presets = Vec::with_capacity(candidates.len());
+        for (id_text, (_, preset_path)) in candidates {
+            let id = PresetId::new(id_text)?;
             let json = match fs::read(&preset_path).await {
                 Ok(json) => json,
                 Err(err) => {
@@ -247,7 +266,6 @@ impl<'a> PresetStore<'a> {
             }
         }
 
-        presets.sort_by(|a, b| a.id.as_ref().cmp(b.id.as_ref()));
         Ok(presets)
     }
 
@@ -259,11 +277,16 @@ impl<'a> PresetStore<'a> {
             .presets_dir()
             .join(format!("{}.json", id.as_ref()));
 
+        let mut found = false;
         if preset_dir.exists() {
             fs::remove_dir_all(&preset_dir).await?;
-        } else if flat_path.exists() {
+            found = true;
+        }
+        if flat_path.exists() {
             fs::remove_file(&flat_path).await?;
-        } else {
+            found = true;
+        }
+        if !found {
             return Err(AirpError::PresetNotFound(id.as_ref().to_string()));
         }
         info!("Deleted preset: {}", id.as_ref());

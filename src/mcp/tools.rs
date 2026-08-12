@@ -21,6 +21,14 @@ impl AirpMcpServer {
 
         let (png_data, source) = match (png_base64, png_path) {
             (Some(b64), None) => {
+                if base64_decoded_len(b64).is_some_and(|len| len > MAX_PNG_BASE64_BYTES)
+                    || b64.len() > MAX_PNG_BASE64_BYTES.div_ceil(3) * 4
+                {
+                    return Err(crate::error::AirpError::Validation(format!(
+                        "PNG too large: decoded content exceeds {} byte cap; use png_path to import from a file",
+                        MAX_PNG_BASE64_BYTES
+                    )));
+                }
                 let data = base64_decode(b64)?;
                 if data.len() > MAX_PNG_BASE64_BYTES {
                     return Err(crate::error::AirpError::Validation(format!(
@@ -822,9 +830,13 @@ impl AirpMcpServer {
 
         let id = PresetId::new(preset_id)?;
 
-        // Get preset
-        let store = PresetStore::new(&self.storage);
-        let preset = store.get(&id).await?;
+        // Read once so every derived artifact comes from the same atomic file
+        // snapshot, even if an import replaces preset.json concurrently.
+        let raw_path = self.storage.preset_json_path(id.as_ref());
+        let raw = tokio::fs::read(&raw_path).await?;
+        let json_bytes = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&raw);
+        let value: Value = serde_json::from_slice(json_bytes)?;
+        let preset = crate::storage::preset_store::parse_raw_preset(&id, &value)?;
 
         // Decompose
         let config = crate::mcp::DecomposeConfig {
@@ -840,15 +852,11 @@ impl AirpMcpServer {
         // summaries are convenience views only; `preset_raw.json` and the
         // typed manifest are the lossless Agent-facing handoff for prompts,
         // prompt_order, arrays, and unknown nested fields.
-        let raw_path = self.storage.preset_json_path(id.as_ref());
-        let raw = tokio::fs::read(&raw_path).await?;
         let output_dir = std::path::Path::new(&result.target_dir);
         tokio::fs::write(output_dir.join("preset_raw.json"), &raw).await?;
         result
             .files_written
             .push(output_dir.join("preset_raw.json").display().to_string());
-        let json_bytes = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&raw);
-        let value: Value = serde_json::from_slice(json_bytes)?;
         let manifest = serde_json::json!({
             "preset_id": id.as_ref(),
             "source": "preset_raw.json",
@@ -1757,6 +1765,13 @@ impl AirpMcpServer {
         let artifact_full = self
             .storage
             .safe_resolve_for_write(&preset_dir, artifact_path)?;
+        let canonical_preset_dir = preset_dir.canonicalize().unwrap_or(preset_dir.clone());
+        if is_reserved_preset_artifact(&canonical_preset_dir, &artifact_full) {
+            return Err(AirpError::Validation(format!(
+                "artifact path is reserved for authoritative preset storage: {}",
+                artifact_path
+            )));
+        }
         if let Some(parent) = artifact_full.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -2236,6 +2251,46 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(input)
         .map_err(|e| crate::error::AirpError::Validation(format!("Base64 decode error: {}", e)))
+}
+
+fn base64_decoded_len(input: &str) -> Option<usize> {
+    if !input.len().is_multiple_of(4) {
+        return None;
+    }
+    let padding = input
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|&&byte| byte == b'=')
+        .count();
+    if padding > 2 {
+        return None;
+    }
+    input
+        .len()
+        .checked_div(4)?
+        .checked_mul(3)?
+        .checked_sub(padding)
+}
+
+fn is_reserved_preset_artifact(base: &std::path::Path, path: &std::path::Path) -> bool {
+    let Ok(relative) = path.strip_prefix(base) else {
+        return true;
+    };
+    if relative.components().count() != 1 {
+        return false;
+    }
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    // Windows ignores trailing dots/spaces in normal file names and uses ':'
+    // for alternate data streams. Apply those equivalence rules everywhere
+    // so a request cannot become authoritative after crossing the OS boundary.
+    let filesystem_name = name.split(':').next().unwrap_or(name);
+    let folded = filesystem_name
+        .trim_end_matches(['.', ' '])
+        .to_ascii_lowercase();
+    folded == "preset.json" || folded.starts_with(".preset.json.tmp-")
 }
 
 fn parse_u64_arg(args: &Value, name: &str, default: u64) -> Result<u64> {

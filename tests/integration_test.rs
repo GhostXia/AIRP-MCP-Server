@@ -1019,6 +1019,203 @@ async fn test_preset_list_skips_invalid_and_accepts_flat_migration() {
 }
 
 #[tokio::test]
+async fn test_unicode_preset_id_roundtrip_without_normalization() {
+    let ctx = common::TestContext::new().await;
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let composed = airp_mcp_server::models::PresetId::new("角色.預設_1").unwrap();
+    let other_unicode = airp_mcp_server::models::PresetId::new("é").unwrap();
+    assert_ne!(composed.as_ref(), other_unicode.as_ref());
+
+    let raw = br#"{"name":"Unicode preset","config":{}}"#;
+    store.save_raw(&composed, raw).await.unwrap();
+    assert_eq!(store.get(&composed).await.unwrap().name, "Unicode preset");
+    assert!(
+        store
+            .list()
+            .await
+            .unwrap()
+            .iter()
+            .any(|preset| preset.id == composed)
+    );
+    store.delete(&composed).await.unwrap();
+    assert!(store.get(&composed).await.is_err());
+
+    for invalid in [
+        "a b",
+        "a/b",
+        "a\\b",
+        ".hidden",
+        "trailing.",
+        "a..b",
+        "\u{0}",
+    ] {
+        assert!(airp_mcp_server::models::PresetId::new(invalid).is_err());
+    }
+}
+
+#[tokio::test]
+async fn test_preset_collision_prefers_canonical_and_delete_removes_both() {
+    let ctx = common::TestContext::new().await;
+    let presets_dir = ctx.data_dir.join("presets");
+    let canonical_dir = presets_dir.join("collision");
+    let canonical_path = canonical_dir.join("preset.json");
+    let flat_path = presets_dir.join("collision.json");
+    std::fs::create_dir_all(&canonical_dir).unwrap();
+    std::fs::write(&canonical_path, br#"{"name":"Canonical","config":{}}"#).unwrap();
+    std::fs::write(&flat_path, br#"{"name":"Legacy","config":{}}"#).unwrap();
+
+    ctx.storage.migrate_legacy_presets().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&canonical_path).unwrap(),
+        r#"{"name":"Canonical","config":{}}"#
+    );
+    assert!(
+        flat_path.exists(),
+        "migration collision must not overwrite data"
+    );
+
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let listed: Vec<_> = store
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|preset| preset.id.as_ref() == "collision")
+        .collect();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "Canonical");
+
+    let id = airp_mcp_server::models::PresetId::new("collision").unwrap();
+    store.delete(&id).await.unwrap();
+    assert!(!canonical_dir.exists());
+    assert!(!flat_path.exists());
+    assert!(store.list().await.unwrap().is_empty());
+
+    let artifact_only_dir = presets_dir.join("legacy-visible");
+    std::fs::create_dir_all(&artifact_only_dir).unwrap();
+    std::fs::write(artifact_only_dir.join("notes.md"), "artifact").unwrap();
+    std::fs::write(
+        presets_dir.join("legacy-visible.json"),
+        br#"{"name":"Visible legacy","config":{}}"#,
+    )
+    .unwrap();
+    let visible = store.list().await.unwrap();
+    assert_eq!(
+        visible
+            .iter()
+            .find(|preset| preset.id.as_ref() == "legacy-visible")
+            .unwrap()
+            .name,
+        "Visible legacy"
+    );
+}
+
+#[tokio::test]
+async fn test_preset_artifact_cannot_overwrite_authoritative_source() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("artifact-guard").unwrap();
+    let raw = br#"{"name":"Authoritative","config":{}}"#;
+    store.save_raw(&id, raw).await.unwrap();
+    let path = ctx.storage.preset_json_path(id.as_ref());
+    let revision =
+        airp_mcp_server::storage::preset_store::raw_revision(&std::fs::metadata(&path).unwrap());
+
+    for artifact_path in [
+        "preset.json",
+        "PRESET.JSON",
+        "notes/../preset.json",
+        "preset.json.",
+        "preset.json ",
+        "preset.json::$DATA",
+        ".preset.json.tmp-123-4",
+        ".preset.json.tmp-123-4.",
+        ".PRESET.JSON.TMP-123-4",
+    ] {
+        let error = server
+            .handle_write_preset_artifact(serde_json::json!({
+                "preset_id": id.as_ref(),
+                "artifact_path": artifact_path,
+                "content": "corrupt"
+            }))
+            .await
+            .expect_err("reserved artifact path must be rejected");
+        assert!(error.to_string().contains("reserved"));
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
+        assert_eq!(
+            airp_mcp_server::storage::preset_store::raw_revision(
+                &std::fs::metadata(&path).unwrap()
+            ),
+            revision
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_preset_decompose_uses_one_raw_snapshot() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("snapshot").unwrap();
+    let raw = br#"{"name":"Snapshot A","config":{"system_prompt_prefix":"from-a"},"unknown":{"version":"a"}}"#;
+    store.save_raw(&id, raw).await.unwrap();
+
+    let target = ctx.data_dir.join("snapshot-output");
+    let result = server
+        .handle_decompose_preset(serde_json::json!({
+            "preset_id": id.as_ref(),
+            "target_dir": target.to_string_lossy()
+        }))
+        .await
+        .unwrap();
+    assert!(result.contains("Snapshot A"));
+    let output_dir = target.join("presets").join(id.as_ref());
+    assert_eq!(
+        std::fs::read(output_dir.join("preset_raw.json")).unwrap(),
+        raw
+    );
+    assert!(
+        std::fs::read_to_string(output_dir.join("system_prompt.md"))
+            .unwrap()
+            .contains("from-a")
+    );
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(output_dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["preset_id"], id.as_ref());
+    assert!(
+        manifest["top_level_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|key| key == "unknown")
+    );
+}
+
+#[tokio::test]
+async fn test_png_base64_limit_is_checked_before_decode_allocation() {
+    use base64::Engine;
+
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let cap = 10 * 1024 * 1024;
+
+    let at_limit = base64::engine::general_purpose::STANDARD.encode(vec![0_u8; cap]);
+    let at_limit_error = server
+        .handle_import_card(serde_json::json!({"png_base64": at_limit}))
+        .await
+        .expect_err("zero bytes are not a PNG");
+    assert!(!at_limit_error.to_string().contains("PNG too large"));
+
+    let over_limit = base64::engine::general_purpose::STANDARD.encode(vec![0_u8; cap + 1]);
+    let over_limit_error = server
+        .handle_import_card(serde_json::json!({"png_base64": over_limit}))
+        .await
+        .expect_err("decoded content over the cap must be rejected");
+    assert!(over_limit_error.to_string().contains("PNG too large"));
+}
+
+#[tokio::test]
 async fn test_preset_decompose_accepts_dot_id() {
     let ctx = common::TestContext::new().await;
     let server = ctx.server();
