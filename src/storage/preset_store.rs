@@ -106,11 +106,11 @@ impl<'a> PresetStore<'a> {
         expected_revision: Option<&str>,
     ) -> Result<PresetRawPage> {
         let path = self.preset_path(id);
-        let metadata = fs::metadata(&path)
+        let mut file = fs::File::open(&path)
             .await
             .map_err(|_| AirpError::PresetNotFound(id.as_ref().to_string()))?;
-        let total_bytes = metadata.len();
-        let revision = raw_revision(&metadata);
+        let total_bytes = file.metadata().await?.len();
+        let revision = raw_revision_for_file(&mut file).await?;
         if let Some(expected) = expected_revision {
             if expected != revision {
                 return Err(AirpError::Validation(format!(
@@ -131,7 +131,6 @@ impl<'a> PresetStore<'a> {
             ));
         }
 
-        let mut file = fs::File::open(&path).await?;
         validate_utf8_boundary(&mut file, offset, total_bytes).await?;
         file.seek(SeekFrom::Start(offset)).await?;
         let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
@@ -163,10 +162,9 @@ impl<'a> PresetStore<'a> {
         bytes.truncate(returned_bytes);
 
         // Detect a replacement that happened while the bounded read was in
-        // flight.  This is cheap metadata-only validation; no second full
-        // source read is needed.
-        let after = fs::metadata(&path).await?;
-        let after_revision = raw_revision(&after);
+        // flight. The second bounded-memory hash checks the current path,
+        // while the page and initial revision came from one open handle.
+        let after_revision = raw_revision_for_path(&path).await?;
         if after_revision != revision {
             return Err(AirpError::Validation(format!(
                 "preset revision changed during read: {} -> {}",
@@ -315,30 +313,31 @@ pub struct PresetRawPage {
     pub content: String,
 }
 
-/// A metadata revision is stable across page calls and changes on the normal
-/// atomic-replace path used by `save_raw`.  It is intentionally computed from
-/// metadata only so asking for a page never reads the whole source document.
-pub fn raw_revision(metadata: &std::fs::Metadata) -> String {
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| format!("{}:{}", duration.as_secs(), duration.subsec_nanos()))
-        .unwrap_or_else(|| "unknown".to_string());
-    let created = metadata
-        .created()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| format!("{}:{}", duration.as_secs(), duration.subsec_nanos()))
-        .unwrap_or_else(|| "unknown".to_string());
-    #[cfg(unix)]
-    let identity = {
-        use std::os::unix::fs::MetadataExt;
-        format!("{}:{}", metadata.dev(), metadata.ino())
-    };
-    #[cfg(not(unix))]
-    let identity = created.clone();
-    format!("{}:{}:{}:{}", metadata.len(), modified, created, identity)
+/// A content revision is stable across page calls and changes whenever the
+/// authoritative bytes change. The digest is streamed in bounded memory so a
+/// page request never allocates the whole source document.
+pub async fn raw_revision_for_path(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path).await?;
+    raw_revision_for_file(&mut file).await
+}
+
+async fn raw_revision_for_file(file: &mut fs::File) -> Result<String> {
+    use sha1::{Digest, Sha1};
+
+    file.seek(SeekFrom::Start(0)).await?;
+    let mut hash = Sha1::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        hash.update(&buffer[..read]);
+    }
+    file.seek(SeekFrom::Start(0)).await?;
+    Ok(format!("{total}:{:x}", hash.finalize()))
 }
 
 async fn validate_utf8_boundary(file: &mut fs::File, offset: u64, total_bytes: u64) -> Result<()> {
@@ -359,13 +358,17 @@ async fn validate_utf8_boundary(file: &mut fs::File, offset: u64, total_bytes: u
     }
 
     // EOF is a valid boundary only when the final code point is complete.
-    let start = total_bytes.saturating_sub(4);
-    file.seek(SeekFrom::Start(start)).await?;
+    let probe_start = total_bytes.saturating_sub(4);
+    file.seek(SeekFrom::Start(probe_start)).await?;
     let mut tail = Vec::new();
-    file.take(total_bytes - start)
+    file.take(total_bytes - probe_start)
         .read_to_end(&mut tail)
         .await?;
-    if std::str::from_utf8(&tail).is_err() {
+    let suffix_start = tail
+        .iter()
+        .position(|byte| byte & 0b1100_0000 != 0b1000_0000)
+        .unwrap_or(tail.len());
+    if suffix_start == tail.len() || std::str::from_utf8(&tail[suffix_start..]).is_err() {
         return Err(AirpError::Validation(format!(
             "offset {} is not a UTF-8 boundary",
             offset
@@ -665,15 +668,18 @@ fn parse_regex_scripts(
             continue;
         };
         let enabled = if sillytavern {
-            match item.get("disabled").and_then(|v| v.as_bool()) {
-                Some(disabled) => !disabled,
-                None => {
-                    warn!(
-                        index = idx,
-                        "Skipping preset regex entry with invalid disabled field"
-                    );
-                    continue;
-                }
+            match item.get("disabled") {
+                None => true,
+                Some(value) => match value.as_bool() {
+                    Some(disabled) => !disabled,
+                    None => {
+                        warn!(
+                            index = idx,
+                            "Skipping preset regex entry with invalid disabled field"
+                        );
+                        continue;
+                    }
+                },
             }
         } else {
             item.get("enabled")
@@ -778,13 +784,15 @@ async fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
     from_wide.push(0);
     let mut to_wide: Vec<u16> = to.as_os_str().encode_wide().collect();
     to_wide.push(0);
-    let status = unsafe {
+    let status = tokio::task::spawn_blocking(move || unsafe {
         MoveFileExW(
             from_wide.as_ptr(),
             to_wide.as_ptr(),
             0x0000_0001 | 0x0000_0008, // REPLACE_EXISTING | WRITE_THROUGH
         )
-    };
+    })
+    .await
+    .map_err(io::Error::other)?;
     if status == 0 {
         Err(io::Error::last_os_error())
     } else {

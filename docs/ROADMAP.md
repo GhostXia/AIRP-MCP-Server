@@ -40,7 +40,7 @@
 
 ### 1.1 传输层真正打通
 - **修复致命 bug**：stdio 与 HTTP 都曾把 handler 包进 rmcp `router::Router`，该 router 用自己的（空）路由表答 `tools/list` → **对外暴露 0 工具**。改为直接 serve `AirpMcpServer`（rmcp 对 `ServerHandler` 有 blanket `Service` impl，派发到手写方法）。
-- **HTTP Streamable（`/mcp/v1`）已实测活体**：抽出 `build_router(server, auth_token)`，用 `tower::oneshot` 进程内打真实 JSON-RPC，解码 SSE body 断言 `initialize` 结果（serverInfo/protocolVersion）+ `Mcp-Session-Id` + `tools/list = 38`。bearer 401/放行、CORS 就位。
+- **HTTP Streamable（`/mcp/v1`）已实测活体**：抽出 `build_router(server, auth_token)`，用 `tower::oneshot` 进程内打真实 JSON-RPC，解码 SSE body 断言 `initialize` 结果（serverInfo/protocolVersion）+ `Mcp-Session-Id` + `tools/list = 40`。bearer 401/放行、CORS 就位。
 - **stdio 跨进程 e2e**（`tests/stdio_e2e.rs`）：拉真 `airp-mcp` 二进制走 NDJSON，`initialize → notifications/initialized → tools/call list_characters`，断言真实数据 + 干净退出码。钉死契约 A2–A6。
 
 ### 1.2 协议版本：声明最新 + 自动协商
@@ -70,7 +70,7 @@
 - **入口**：`.github/workflows/`（加 release job 或用 `gh release create` + tag）。无源码改动。
 
 ### B · HTTP 测试补全（可选，边际收益递减）
-进程内测试已覆盖 `initialize` + session + `tools/list = 38` + 鉴权。剩余 R 项（按需补）：
+进程内测试已覆盖 `initialize` + session + `tools/list = 40` + 鉴权。剩余 R 项（按需补）：
 - `tools/call`（HTTP，解码 SSE body）断言真实内容 —— R2 全。
 - 缺/错 `MCP-Protocol-Version`（已初始化会话）→ 400 —— R4。
 - JSON-RPC 规范错误码 —— R8。
@@ -152,7 +152,7 @@
 | **可观测性** | 生产部署 / 排障需要时 | 结构化日志已具；按需加请求级 tracing / 指标。**不为加而加** |
 | **健康/就绪探针** | 容器/编排部署时 | 已有 `/health`；需要时加 `/ready` |
 | **协议版本随 rmcp 升级** | rmcp 出新版 | 已吃 `LATEST`，自动跟进；只需确认 `min` 协商对新版仍成立 |
-| **入口尺寸 cap 补全（历史记录）** | 关注 stdio OOM 面时 | 该条记录描述旧版上限；当前实现为 `import_card.png_path` ≤ 256 MiB、`import_preset.preset_path` ≤ 32 MiB、`preset_json` ≤ 16 MiB、`update_lorebook.lorebook_path` ≤ 256 MiB。所有 `_path` 参数内容不进模型上下文。**旧 raw resource 读取端统一截断**：`read_character_card` / `read_character_lorebook` / `airp://presets/{id}/raw` 均走 `truncate_for_context`（`AIRP_MAX_READ_BYTES` 默认 32 KiB，超限带 `[PARTIAL: ...]` 标记）；Agent 分页使用 `read_preset_raw`。 |
+| **入口尺寸 cap 补全（历史记录）** | 关注 stdio OOM 面时 | 该条记录描述旧版上限；当前实现为 `import_card.png_path` ≤ 256 MiB、`import_preset.preset_path` ≤ 32 MiB、`preset_json` ≤ 16 MiB、`update_lorebook.lorebook_path` ≤ 256 MiB。所有 `_path` 参数内容不进模型上下文。**旧 raw resource 读取端统一截断**：`read_character_card` / `read_character_lorebook` 走 `truncate_for_context`，`airp://presets/{id}/raw` 走 `truncate_prefix_for_context`（`AIRP_MAX_READ_BYTES` 默认 32 KiB，超限带 `[PARTIAL: ...]` 标记）；Agent 分页使用 `read_preset_raw`。 |
 | **酒馆前端 + agent 后端部署** | 想用 SillyTavern 当前端、agent 当后端跑 RP 时 | AIRP 零改动即可当 agent 的 MCP 数据后端（agy 走 stdio/streamable-http 均可）。设计 + 安全姿态见 [deployment-tavern-agent.md](deployment-tavern-agent.md)。**不可信卡场景：agent 应 sandbox；AIRP 当前用隔离 data-dir + 路径沙箱（已有），只读/软删待 §2.D+§3 落地**（此用法强化其动机） |
 
 ---
@@ -179,7 +179,7 @@
 3. **只加法**：新增工具 / 可选参数随意；破坏性变更**必须**升 `Cargo.toml` 版本并在变更日志记。
 4. **资源 URI 稳定**：`airp://...` 形态不破坏。
 
-当前包含：**38 工具 / 19 资源 / 12 提示词**。违反此规约 = 让下游客户端崩 = 制造「针对性重写」，正是本项目要避免的。
+当前包含：**40 工具 / 19 资源 / 12 提示词**。违反此规约 = 让下游客户端崩 = 制造「针对性重写」，正是本项目要避免的。
 
 ---
 

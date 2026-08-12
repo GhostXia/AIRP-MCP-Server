@@ -201,11 +201,11 @@ apply_lorebook(character_id, text="我们在天剑阁门前停下")
 ```
 
 ### 更新世界书
-```
+```text
 update_lorebook(character_id="凌欺霜", lorebook_path="/path/to/world_book.json")   # 推荐：服务端读盘，JSON 不进上下文
 update_lorebook(character_id="凌欺霜", entries=[{id, name, keys, content, enabled, ...}])   # 退回：内联 JSON
 ```
-> ⚠️ **别把整本世界书当 `entries` 数组塞进上下文**：SillyTavern 世界书常有几十~几百条目，几十~几百 KB；走 `entries` 会原样进模型上下文，且 JSON-RPC 请求体在 Claude Desktop 等客户端有较低上限。用 `lorebook_path` 让 AIRP 服务端直接读文件，内容**不进上下文**（服务端上限 ≤ 256 MiB），兼容 SillyTavern 的 `{entries: {...}}` 和 `{entries: [...]}` 两种格式；仅当文件路径不可达时才退回 `entries`。
+> ⚠️ **别把整本世界书当 `entries` 数组塞进上下文**：SillyTavern 世界书常有几十~几百条目，几十~几百 KB；走 `entries` 会原样进模型上下文，且 JSON-RPC 请求体在 Claude Desktop 等客户端有较低上限。用 `lorebook_path` 让 AIRP 服务端直接读文件，内容**不进上下文**（服务端上限 ≤ 256 MiB），兼容 SillyTavern 的 `{entries: {...}}` 和 `{entries: [...]}` 两种格式；路径不可达时调用会报错，需要改用 `entries` 重新调用。
 
 ---
 
@@ -246,7 +246,7 @@ update_state(character_id, state_delta={
 预设是 AIRP 的**杀手级功能**。它把用户调试好的文风、参数、正则过滤打包成一个可移植的数据包。
 
 ### 导入第三方预设
-```
+```text
 import_preset(preset_id="LENI", preset_path="/path/to/LENI.json")   # 推荐：服务端读盘，JSON 不进上下文
 → 写入 presets/LENI/preset.json
 ```

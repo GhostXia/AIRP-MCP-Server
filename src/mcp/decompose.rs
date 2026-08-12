@@ -517,9 +517,10 @@ impl PresetDecomposer {
 ```
 
 ## Raw source assembly
-<!-- preset_raw.json is authoritative.  AIRP does not emulate the
-     SillyTavern Prompt Manager: prompts/prompt_order and unknown fields stay
-     opaque, and the Agent decides how to apply them. -->
+<!-- The authoritative source is presets/{{id}}/preset.json. The decompose_preset
+     tool also copies it here as preset_raw.json; direct PresetDecomposer callers
+     receive summaries only. AIRP does not emulate the SillyTavern Prompt Manager:
+     prompts/prompt_order and unknown fields stay opaque. -->
 
 ## Legacy nested-config suffix
 ```

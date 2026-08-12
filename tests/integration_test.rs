@@ -1119,8 +1119,9 @@ async fn test_preset_artifact_cannot_overwrite_authoritative_source() {
     let raw = br#"{"name":"Authoritative","config":{}}"#;
     store.save_raw(&id, raw).await.unwrap();
     let path = ctx.storage.preset_json_path(id.as_ref());
-    let revision =
-        airp_mcp_server::storage::preset_store::raw_revision(&std::fs::metadata(&path).unwrap());
+    let revision = airp_mcp_server::storage::preset_store::raw_revision_for_path(&path)
+        .await
+        .unwrap();
 
     for artifact_path in [
         "preset.json",
@@ -1144,9 +1145,9 @@ async fn test_preset_artifact_cannot_overwrite_authoritative_source() {
         assert!(error.to_string().contains("reserved"));
         assert_eq!(std::fs::read(&path).unwrap(), raw);
         assert_eq!(
-            airp_mcp_server::storage::preset_store::raw_revision(
-                &std::fs::metadata(&path).unwrap()
-            ),
+            airp_mcp_server::storage::preset_store::raw_revision_for_path(&path)
+                .await
+                .unwrap(),
             revision
         );
     }
@@ -1189,6 +1190,64 @@ async fn test_preset_decompose_uses_one_raw_snapshot() {
             .unwrap()
             .iter()
             .any(|key| key == "unknown")
+    );
+}
+
+#[tokio::test]
+async fn test_preset_revision_changes_for_same_length_replacement() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("revision-content").unwrap();
+    let first = br#"{"name":"AAAA","config":{}}"#;
+    let second = br#"{"name":"BBBB","config":{}}"#;
+    assert_eq!(first.len(), second.len());
+    store.save_raw(&id, first).await.unwrap();
+    let page: Value = serde_json::from_str(
+        &server
+            .handle_read_preset_raw(serde_json::json!({
+                "preset_id": id.as_ref(), "max_bytes": 1024
+            }))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let old_revision = page["revision"].as_str().unwrap();
+    store.save_raw(&id, second).await.unwrap();
+    let error = server
+        .handle_read_preset_raw(serde_json::json!({
+            "preset_id": id.as_ref(),
+            "max_bytes": 1024,
+            "expected_revision": old_revision
+        }))
+        .await
+        .expect_err("same-length replacement must invalidate revision");
+    assert!(error.to_string().contains("revision changed"));
+}
+
+#[tokio::test]
+async fn test_sillytavern_regex_disabled_defaults_to_enabled() {
+    let ctx = common::TestContext::new().await;
+    let store = airp_mcp_server::storage::PresetStore::new(&ctx.storage);
+    let id = airp_mcp_server::models::PresetId::new("regex-disabled").unwrap();
+    let raw = br#"{"name":"Regex","prompts":[],"prompt_order":[],"extensions":{"RegexBinding":{"regexes":[{"id":"missing","scriptName":"Missing","findRegex":"a","replaceString":"b"},{"id":"off","scriptName":"Off","findRegex":"a","replaceString":"b","disabled":true},{"id":"on","scriptName":"On","findRegex":"a","replaceString":"b","disabled":false},{"id":"bad","scriptName":"Bad","findRegex":"a","replaceString":"b","disabled":"no"}]}}}"#;
+    store.save_raw(&id, raw).await.unwrap();
+    let scripts = store.get(&id).await.unwrap().config.regex_scripts;
+    assert_eq!(scripts.len(), 3);
+    assert!(
+        scripts
+            .iter()
+            .any(|script| script.id == "missing" && script.enabled)
+    );
+    assert!(
+        scripts
+            .iter()
+            .any(|script| script.id == "on" && script.enabled)
+    );
+    assert!(
+        scripts
+            .iter()
+            .any(|script| script.id == "off" && !script.enabled)
     );
 }
 
@@ -1393,4 +1452,26 @@ async fn test_preset_raw_pages_and_structured_reconstruction() {
     assert_eq!(nested["items"][0]["key"], "flag");
     assert_eq!(nested["items"][0]["type"], "boolean");
     assert!(nested.to_string().len() <= 1024);
+}
+
+#[tokio::test]
+async fn test_preset_raw_eof_rejects_incomplete_utf8() {
+    let ctx = common::TestContext::new().await;
+    let server = ctx.server();
+    let id = "incomplete-utf8";
+    let path = ctx.storage.preset_json_path(id);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut raw = br#"{"name":"broken","config":{},"tail":""#.to_vec();
+    raw.extend_from_slice(&[0xE7, 0x8C]);
+    std::fs::write(&path, &raw).unwrap();
+
+    let error = server
+        .handle_read_preset_raw(serde_json::json!({
+            "preset_id": id,
+            "offset": raw.len(),
+            "max_bytes": 256
+        }))
+        .await
+        .expect_err("EOF after an incomplete UTF-8 code point must be rejected");
+    assert!(error.to_string().contains("UTF-8 boundary"));
 }

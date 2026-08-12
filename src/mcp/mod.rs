@@ -1346,7 +1346,7 @@ fn read_preset_structure_tool() -> Tool {
                 "preset_id": { "type": "string", "description": "Preset ID" },
                 "pointer": { "type": "string", "description": "RFC6901 JSON pointer (empty string selects root)", "default": "" },
                 "offset": { "type": "integer", "minimum": 0, "description": "Array/object item offset; for strings, UTF-8 byte offset", "default": 0 },
-                "limit": { "type": "integer", "minimum": 1, "description": "Maximum items (or string bytes) in this page", "default": 100 },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 10000, "description": "Maximum items (or string bytes) in this page", "default": 100 },
                 "max_bytes": { "type": "integer", "minimum": 1, "description": "Maximum encoded response bytes; cannot exceed AIRP_MAX_READ_BYTES" },
                 "expected_revision": { "type": "string", "description": "Revision returned by a prior page; replacement is rejected" }
             },

@@ -41,7 +41,7 @@ Gateway 所述桩状态**属实**：
 - 开 rmcp feature `transport-streamable-http-server`，用 `StreamableHttpService` 挂 `/mcp/v1`，替换手写桩。R1–R5、R8 由 rmcp 提供；R6/R7 本服务在外层包裹。
 - `allowed_hosts` 关闭（`disable_allowed_hosts`）以支持局域网部署（电脑后端 + 手机同 wifi）；安全模型 = bearer + 信任局域网。**勿公网暴露。**
 - **CI 验证**：编译 + 单元测试 + clippy + fmt 全绿。
-- **待实测（CI 验不了活体 HTTP）**：Gateway 的 3 条验收 —— `initialize` 返 `Mcp-Session-Id`、带会话头 `tools/list` 返 38 工具、`tools/call` 返真实内容。需起服务用 curl/Gateway 实跑（本机无 MSVC linker，未本地起服务）。
+- **待实测（CI 验不了活体 HTTP）**：Gateway 的 3 条验收 —— `initialize` 返 `Mcp-Session-Id`、带会话头 `tools/list` 返 40 工具、`tools/call` 返真实内容。需起服务用 curl/Gateway 实跑（本机无 MSVC linker，未本地起服务）。
 
 ---
 
@@ -76,7 +76,7 @@ Gateway 所述桩状态**属实**：
 
 **验收标准（Gateway 会这样验证）**：
 1. `POST /mcp/v1` 发 `initialize` → 返回真实 `protocolVersion`（与请求一致或服务端支持版本）+ 响应头含 `Mcp-Session-Id`。
-2. 带会话头发 `tools/list` → 返回全部 38 个工具。
+2. 带会话头发 `tools/list` → 返回全部 40 个工具。
 3. 发 `tools/call`（如 `list_characters`）→ 返回真实内容，而非空 `{}`。
 
 **不需要改的**：stdio 模式、数据模型、工具实现，全部维持现状。

@@ -48,7 +48,7 @@
 
 ### 4.1 预设源与分页读取
 
-`presets/{id}/preset.json` 的原始 UTF-8 字节是唯一权威源；导入时保留 BOM、空白、`prompts`、`prompt_order` 与未知嵌套字段。AIRP 只提供无损拆解，不模拟 SillyTavern Prompt Manager，也不会把 ST 字段派生为 prefix/suffix。`read_preset_raw` 按字节分页并返回稳定 `revision`；`read_preset_structure` 用 RFC6901 `pointer` 分页返回带 JSON type 的对象/数组/字符串片段。旧 `airp://presets/{id}/raw` 资源仍保留，但超 cap 时继续使用兼容性的 `[PARTIAL]` 前缀。
+`presets/{id}/preset.json` 的原始 UTF-8 字节是唯一权威源；导入时保留 BOM、空白、`prompts`、`prompt_order` 与未知嵌套字段。AIRP 只提供无损拆解，不模拟 SillyTavern Prompt Manager，也不会把 ST 字段派生为 prefix/suffix。`read_preset_raw` 按字节分页并返回稳定 `revision`；`read_preset_structure` 用 RFC6901 `pointer` 分页返回带 JSON type 的对象/数组/字符串片段，并拒绝超过 8 MiB 的源（此时改用 `read_preset_raw`）。旧 `airp://presets/{id}/raw` 资源仍保留，但超 cap 时继续使用兼容性的 `[PARTIAL]` 前缀。
 
 ---
 

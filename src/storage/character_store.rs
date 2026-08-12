@@ -27,7 +27,11 @@ impl<'a> CharacterStore<'a> {
     /// character's `world/lorebook.json` instead of being discarded.
     pub async fn import_from_png(&self, png_data: &[u8]) -> Result<Character> {
         // Parse PNG chara/ccv3 chunk
-        let (card, extracted_lorebook) = self.parse_png_card(png_data).await?;
+        let owned_png: std::sync::Arc<[u8]> = png_data.into();
+        let (card, extracted_lorebook) =
+            tokio::task::spawn_blocking(move || Self::parse_png_card_blocking(&owned_png))
+                .await
+                .map_err(|err| AirpError::PngParse(format!("PNG parser task failed: {err}")))??;
         let id = CharacterId::new(sanitize_id(&card.name))?;
 
         // Create character directory
@@ -217,7 +221,7 @@ impl<'a> CharacterStore<'a> {
     /// extracted and returned alongside the card.
     ///
     /// Returns `(CharacterCard, Option<Lorebook>)`.
-    async fn parse_png_card(&self, png_data: &[u8]) -> Result<(CharacterCard, Option<Lorebook>)> {
+    fn parse_png_card_blocking(png_data: &[u8]) -> Result<(CharacterCard, Option<Lorebook>)> {
         // `png::Reader::read_info` stops at the first IDAT chunk.  Metadata
         // after IDAT is therefore not guaranteed to be present in
         // `reader.info()`.  Scan the complete chunk stream ourselves (up to
@@ -452,20 +456,10 @@ fn verify_chunk_crc(chunk_type: &[u8], chunk_data: &[u8], crc_bytes: &[u8]) -> R
     debug_assert_eq!(crc_bytes.len(), 4);
 
     let expected = u32::from_be_bytes([crc_bytes[0], crc_bytes[1], crc_bytes[2], crc_bytes[3]]);
-    let mut crc = 0xFFFF_FFFFu32;
-
-    for &byte in chunk_type.iter().chain(chunk_data.iter()) {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xEDB8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-
-    let actual = !crc;
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(chunk_type);
+    hasher.update(chunk_data);
+    let actual = hasher.finalize();
     if actual != expected {
         return Err(AirpError::PngParse(format!(
             "PNG chunk CRC mismatch for {}",
@@ -532,13 +526,26 @@ fn validate_png_image(png_data: &[u8]) -> Result<()> {
     let mut reader = decoder
         .read_info()
         .map_err(|e| AirpError::PngParse(e.to_string()))?;
-    let mut frame = vec![0; reader.output_buffer_size()];
+    let output_size = reader.output_buffer_size();
+    validate_png_output_size(output_size)?;
+    let mut frame = vec![0; output_size];
     reader
         .next_frame(&mut frame)
         .map_err(|e| AirpError::PngParse(e.to_string()))?;
     reader
         .finish()
         .map_err(|e| AirpError::PngParse(e.to_string()))?;
+    Ok(())
+}
+
+fn validate_png_output_size(output_size: usize) -> Result<()> {
+    const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+    if output_size > MAX_OUTPUT_BYTES {
+        return Err(AirpError::PngParse(format!(
+            "decoded PNG frame exceeds {} byte limit",
+            MAX_OUTPUT_BYTES
+        )));
+    }
     Ok(())
 }
 
@@ -698,4 +705,15 @@ fn normalize_lorebook_entry(value: &serde_json::Value) -> Result<LorebookEntry> 
 
     serde_json::from_value(val)
         .map_err(|e| AirpError::PngParse(format!("Invalid lorebook entry: {}", e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_png_output_size;
+
+    #[test]
+    fn png_output_size_is_checked_before_allocation() {
+        assert!(validate_png_output_size(64 * 1024 * 1024).is_ok());
+        assert!(validate_png_output_size(64 * 1024 * 1024 + 1).is_err());
+    }
 }

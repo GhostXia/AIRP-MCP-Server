@@ -699,7 +699,7 @@ impl AirpMcpServer {
         let metadata = tokio::fs::metadata(&path)
             .await
             .map_err(|_| AirpError::PresetNotFound(id.as_ref().to_string()))?;
-        let revision = crate::storage::preset_store::raw_revision(&metadata);
+        let revision = crate::storage::preset_store::raw_revision_for_path(&path).await?;
         if let Some(expected) = expected_revision {
             if expected != revision {
                 return Err(AirpError::Validation(format!(
@@ -723,8 +723,7 @@ impl AirpMcpServer {
         })?;
         let selected = resolve_json_pointer(&document, pointer)?;
 
-        let after = tokio::fs::metadata(&path).await?;
-        let after_revision = crate::storage::preset_store::raw_revision(&after);
+        let after_revision = crate::storage::preset_store::raw_revision_for_path(&path).await?;
         if after_revision != revision {
             return Err(AirpError::Validation(format!(
                 "preset revision changed during read: {} -> {}",
@@ -2254,7 +2253,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 }
 
 fn base64_decoded_len(input: &str) -> Option<usize> {
-    if !input.len().is_multiple_of(4) {
+    if input.len().checked_rem(4) != Some(0) {
         return None;
     }
     let padding = input
@@ -2343,7 +2342,7 @@ fn encode_raw_page_with_budget(
         let encoded = serde_json::to_vec(&page)?;
         if encoded.len() <= max_bytes {
             best = Some(encoded);
-            low = end.saturating_add(1);
+            low = midpoint.saturating_add(1);
         } else if end == 0 {
             break;
         } else {
@@ -2630,7 +2629,7 @@ fn structure_object_page(
         ctx.limit,
     );
     let mut items = Vec::new();
-    for (index, (key, value)) in entries.iter().enumerate().skip(start).take(ctx.limit) {
+    for (key, value) in entries.iter().skip(start).take(ctx.limit) {
         let escaped = encode_pointer_token(key);
         let child_pointer = if ctx.pointer.is_empty() {
             format!("/{}", escaped)
@@ -2649,7 +2648,6 @@ fn structure_object_page(
         if serde_json::to_vec(&candidate)?.len() > ctx.max_bytes {
             break;
         }
-        let _ = index;
         items.push(item);
     }
     if items.is_empty() && start < entries.len() {
@@ -2694,8 +2692,9 @@ fn structure_string_page(text: &str, ctx: &StructurePageContext<'_>) -> Result<V
             "has_more": end < text.len(),
             "content": content,
         });
-        if serde_json::to_vec(&candidate)?.len() <= ctx.max_bytes || end == start {
-            if serde_json::to_vec(&candidate)?.len() > ctx.max_bytes {
+        let encoded_len = serde_json::to_vec(&candidate)?.len();
+        if encoded_len <= ctx.max_bytes || end == start {
+            if encoded_len > ctx.max_bytes {
                 return Err(AirpError::Validation(format!(
                     "structured string response exceeds max_bytes {}",
                     ctx.max_bytes
@@ -2705,7 +2704,7 @@ fn structure_string_page(text: &str, ctx: &StructurePageContext<'_>) -> Result<V
         }
         end = text[..end]
             .char_indices()
-            .nth_back(1)
+            .next_back()
             .map(|(idx, _)| idx)
             .unwrap_or(start);
     }

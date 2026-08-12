@@ -11,7 +11,7 @@
 所有推理、叙事推进、角色演绎，都由 MCP Client（Claude Code / Cursor / pi / Codex）通过 AIRP 暴露的 **Tools / Resources / Prompts** 完成。AIRP 只负责把角色卡、世界书、预设、会话、状态、记忆**存好、取好、装配好**。
 
 > **独立可用 · 非全家桶**：本仓是**自包含的标准 MCP server**——零依赖其他 AIRP 仓库，配**任何** MCP
-> 客户端（Claude Code / Cursor / pi / Codex / 自研皆可）即可单独运行，38 个工具**任取子集**使用。
+> 客户端（Claude Code / Cursor / pi / Codex / 自研皆可）即可单独运行，40 个工具**任取子集**使用。
 > 下方提到的 AIRP-Core / AIRP-Gateway 是**可选、各自独立**的伙伴项目，**不是前置依赖**——按需拆用，
 > 像乐高积木，不必整套。
 >
@@ -70,13 +70,13 @@ AIRP_HTTP_TOKEN=your-secret ./target/release/airp-mcp serve --bind 0.0.0.0:3000 
 - 完整 RP 工作流（6 阶段标准轮次 + 三幕叙事弧）
 - 并行调用策略（2–4x 加速）、多角色场景管理、预设文风一键移植
 - §16 **执行隔离**：用隔离 subagent 书写 RP
-- **38 个工具 / 19 个资源 / 12 个提示词**的速查表
+- **40 个工具 / 19 个资源 / 12 个提示词**的速查表
 
 ---
 
 ## 功能总览
 
-### 38 个 MCP Tools
+### 40 个 MCP Tools
 
 | 类别 | 工具 | 用途 |
 |:--|:--|:--|
